@@ -320,12 +320,9 @@ impl MediaDownloader<'_> {
         maximum: u64,
     ) -> Result<(PathBuf, u64), String> {
         for raw_url in candidates {
-            let Ok(url) = Url::parse(raw_url) else {
+            let Some(url) = normalized_media_url(raw_url) else {
                 continue;
             };
-            if !allowed_media_url(&url) {
-                continue;
-            }
             let mut request = self
                 .client
                 .get(url.clone())
@@ -420,9 +417,13 @@ impl MediaDownloader<'_> {
 }
 
 fn allowed_media_url(url: &Url) -> bool {
-    if !matches!(url.scheme(), "https" | "http") {
+    if url.scheme() != "https" {
         return false;
     }
+    allowed_media_host(url)
+}
+
+fn allowed_media_host(url: &Url) -> bool {
     let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
         return false;
     };
@@ -431,7 +432,21 @@ fn allowed_media_url(url: &Url) -> bool {
         .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
 }
 
+fn normalized_media_url(raw: &str) -> Option<Url> {
+    let mut url = Url::parse(raw).ok()?;
+    if url.scheme() == "http" {
+        if !allowed_media_host(&url) {
+            return None;
+        }
+        url.set_scheme("https").ok()?;
+    }
+    allowed_media_url(&url).then_some(url)
+}
+
 fn cookie_allowed_for_host(url: &Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
     url.host_str()
         .map(str::to_ascii_lowercase)
         .is_some_and(|host| host == "qq.com" || host.ends_with(".qq.com"))
@@ -570,14 +585,16 @@ fn now() -> i64 {
 mod tests {
     use url::Url;
 
-    use super::{allowed_media_url, media_extension};
+    use super::{
+        allowed_media_url, cookie_allowed_for_host, media_extension, normalized_media_url,
+    };
 
     #[test]
     fn blocks_non_qq_hosts_and_local_ssrf_targets() {
         assert!(allowed_media_url(
             &Url::parse("https://m.qpic.cn/example.jpg").unwrap()
         ));
-        assert!(allowed_media_url(
+        assert!(!allowed_media_url(
             &Url::parse("http://video.qq.com/example.mp4").unwrap()
         ));
         assert!(!allowed_media_url(
@@ -585,6 +602,19 @@ mod tests {
         ));
         assert!(!allowed_media_url(
             &Url::parse("https://qq.com.evil.invalid/file").unwrap()
+        ));
+        assert_eq!(
+            normalized_media_url("http://video.qq.com/example.mp4")
+                .unwrap()
+                .as_str(),
+            "https://video.qq.com/example.mp4"
+        );
+        assert!(normalized_media_url("http://127.0.0.1/admin").is_none());
+        assert!(cookie_allowed_for_host(
+            &Url::parse("https://video.qq.com/example.mp4").unwrap()
+        ));
+        assert!(!cookie_allowed_for_host(
+            &Url::parse("http://video.qq.com/example.mp4").unwrap()
         ));
     }
 

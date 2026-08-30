@@ -16,6 +16,7 @@ use reqwest::{
     Client, Response,
 };
 use tokio::sync::Mutex;
+use url::Url;
 
 const APP_ID: &str = "549000929";
 const DAID: &str = "5";
@@ -217,10 +218,11 @@ impl QqLogin {
             let uin = callback_query_value(&text, "uin").unwrap_or_default();
             format!("https://ptlogin2.qzone.qq.com/check_sig?pttype=1&uin={uin}&service=ptqrlogin&nodirect=0&ptsigx={ptsigx}&s_url={S_URL}&f_url=&ptlang=2052&ptredirect=100&aid={APP_ID}&daid={DAID}")
         });
+        let login_url = validated_login_callback_url(&login_url)?;
         let callback_uin = callback_query_value(&text, "uin").ok_or("登录成功响应中缺少 uin")?;
         let response = self
             .client
-            .get(&login_url)
+            .get(login_url)
             .header(USER_AGENT, &session.user_agent)
             .header(COOKIE, cookie_header(&session.cookies))
             .send()
@@ -330,6 +332,18 @@ fn poll_login_url(text: &str) -> Option<String> {
         .map(|value| value.as_str())
         .collect::<Vec<_>>();
     (values.len() >= 3 && values[0] == "0").then(|| values[2].to_owned())
+}
+
+fn validated_login_callback_url(raw: &str) -> Result<Url, String> {
+    let url = Url::parse(raw).map_err(|_| "QQ 登录回调地址无效".to_owned())?;
+    let trusted_host = url
+        .host_str()
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|host| host == "qq.com" || host.ends_with(".qq.com"));
+    if url.scheme() != "https" || !trusted_host {
+        return Err("QQ 登录回调未使用受信任的 HTTPS 地址".into());
+    }
+    Ok(url)
 }
 
 fn ptqr_token(qrsig: &str) -> i64 {
@@ -491,7 +505,7 @@ async fn warmup_qzone_session(
 
 #[cfg(test)]
 mod tests {
-    use super::{bkn, callback_query_value, mask_uin, ptqr_token};
+    use super::{bkn, callback_query_value, mask_uin, ptqr_token, validated_login_callback_url};
 
     #[test]
     fn login_hashes_match_reference_algorithm() {
@@ -507,5 +521,14 @@ mod tests {
             Some("o01941163264")
         );
         assert_eq!(mask_uin("1941163264"), "19****64");
+        assert!(validated_login_callback_url(
+            "https://ptlogin2.qzone.qq.com/check_sig?uin=o01941163264"
+        )
+        .is_ok());
+        assert!(validated_login_callback_url(
+            "http://ptlogin2.qzone.qq.com/check_sig?uin=o01941163264"
+        )
+        .is_err());
+        assert!(validated_login_callback_url("https://qq.com.evil.invalid/check_sig").is_err());
     }
 }
