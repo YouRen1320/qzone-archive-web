@@ -28,6 +28,7 @@ pub struct JobRuntime {
     pub login: QqLogin,
     token_hash: String,
     status: RwLock<JobStatus>,
+    pub(crate) lifecycle_lock: Mutex<()>,
     persist_lock: Mutex<()>,
     updates: broadcast::Sender<JobStatus>,
     cancellation: Mutex<CancellationToken>,
@@ -48,6 +49,7 @@ impl JobRuntime {
             login: QqLogin::new().map_err(AppError::internal)?,
             token_hash,
             status: RwLock::new(status),
+            lifecycle_lock: Mutex::new(()),
             persist_lock: Mutex::new(()),
             updates,
             cancellation: Mutex::new(CancellationToken::new()),
@@ -153,6 +155,7 @@ impl JobRuntime {
 pub struct JobManager {
     pub config: Config,
     jobs: RwLock<HashMap<String, Arc<JobRuntime>>>,
+    create_lock: Mutex<()>,
     archive_slots: Arc<Semaphore>,
     active_jobs: AtomicUsize,
 }
@@ -164,6 +167,7 @@ impl JobManager {
             archive_slots: Arc::new(Semaphore::new(config.max_active_archives)),
             config,
             jobs: RwLock::new(HashMap::new()),
+            create_lock: Mutex::new(()),
             active_jobs: AtomicUsize::new(0),
         });
         manager.load_existing().await?;
@@ -171,6 +175,8 @@ impl JobManager {
     }
 
     pub async fn create(&self) -> Result<(Arc<JobRuntime>, String), AppError> {
+        // Capacity check and directory allocation are one reservation boundary.
+        let _create_guard = self.create_lock.lock().await;
         if self.jobs.read().await.len() >= self.config.max_jobs {
             return Err(AppError::unavailable(
                 "job_capacity_reached",
@@ -239,6 +245,17 @@ impl JobManager {
         job: Arc<JobRuntime>,
         request: StartArchiveRequest,
     ) -> Result<JobStatus, AppError> {
+        // Serialize start/delete transitions for this job so only one task can be spawned.
+        let _lifecycle_guard = job.lifecycle_lock.lock().await;
+        let still_registered = self
+            .jobs
+            .read()
+            .await
+            .get(&job.id)
+            .is_some_and(|current| Arc::ptr_eq(current, &job));
+        if !still_registered {
+            return Err(AppError::unauthorized());
+        }
         if !job.login.is_logged_in().await {
             return Err(AppError::conflict(
                 "login_required",
@@ -287,6 +304,7 @@ impl JobManager {
                 return;
             };
             manager.active_jobs.fetch_add(1, Ordering::Relaxed);
+            let _active_guard = ActiveJobGuard(&manager.active_jobs);
             let result = crate::archive::run(
                 task_job.clone(),
                 manager.config.clone(),
@@ -294,7 +312,6 @@ impl JobManager {
                 cancellation.clone(),
             )
             .await;
-            manager.active_jobs.fetch_sub(1, Ordering::Relaxed);
             match result {
                 Ok(()) => {}
                 Err(_error) if cancellation.is_cancelled() => {
@@ -322,10 +339,25 @@ impl JobManager {
     }
 
     pub async fn delete(&self, id: &str) -> Result<(), AppError> {
-        let job = self.jobs.write().await.remove(id);
+        let job = self.jobs.read().await.get(id).cloned();
         let Some(job) = job else {
             return Ok(());
         };
+        let _lifecycle_guard = job.lifecycle_lock.lock().await;
+        let removed = {
+            let mut jobs = self.jobs.write().await;
+            if jobs
+                .get(id)
+                .is_some_and(|current| Arc::ptr_eq(current, &job))
+            {
+                jobs.remove(id)
+            } else {
+                None
+            }
+        };
+        if removed.is_none() {
+            return Ok(());
+        }
         job.abort_task().await;
         job.login.clear().await;
         if job.dir.starts_with(&self.config.data_dir) {
@@ -455,6 +487,14 @@ impl JobManager {
     }
 }
 
+struct ActiveJobGuard<'a>(&'a AtomicUsize);
+
+impl Drop for ActiveJobGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 fn public_archive_error(error: &str) -> String {
     if error.contains("登录") || error.contains("p_skey") {
         "QQ 登录已失效；已完成的数据仍保留，请重新扫码后继续".into()
@@ -547,5 +587,29 @@ mod tests {
         let (job, owner) = manager.create().await.unwrap();
         assert!(manager.authorize(&job.id, &owner).await.is_ok());
         assert!(manager.authorize(&job.id, &"0".repeat(64)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_creates_respect_capacity() {
+        let directory = tempdir().unwrap();
+        let mut config = Config::development(
+            directory.path().join("jobs"),
+            directory.path().join("public"),
+        );
+        config.max_jobs = 2;
+        let manager = JobManager::new(config).await.unwrap();
+        let mut attempts = Vec::new();
+        for _ in 0..12 {
+            let manager = manager.clone();
+            attempts.push(tokio::spawn(async move { manager.create().await.is_ok() }));
+        }
+        let mut created = 0;
+        for attempt in attempts {
+            if attempt.await.unwrap() {
+                created += 1;
+            }
+        }
+        assert_eq!(created, 2);
+        assert_eq!(manager.stored_count().await, 2);
     }
 }

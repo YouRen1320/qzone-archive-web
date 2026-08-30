@@ -114,6 +114,8 @@ async fn start_qr_login(
     jar: CookieJar,
 ) -> Result<Json<QrResponse>, AppError> {
     let job = authorized_job(&state, &jar).await?;
+    // Login refresh and archive start share one lifecycle boundary per job.
+    let _lifecycle_guard = job.lifecycle_lock.lock().await;
     if job.status().await.phase.is_active() {
         return Err(AppError::conflict(
             "job_running",
@@ -139,6 +141,13 @@ async fn poll_qr_login(
     jar: CookieJar,
 ) -> Result<Json<LoginResponse>, AppError> {
     let job = authorized_job(&state, &jar).await?;
+    let _lifecycle_guard = job.lifecycle_lock.lock().await;
+    if job.status().await.phase.is_active() {
+        return Err(AppError::conflict(
+            "job_running",
+            "任务运行期间不能更新 QQ 登录状态",
+        ));
+    }
     let login = job.login.poll_qr_login().await.map_err(upstream_error)?;
     if login.status == "success" {
         let masked = login.masked_uin.clone();
@@ -371,7 +380,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::router;
-    use crate::{config::Config, job::JobManager};
+    use crate::{config::Config, job::JobManager, model::JobPhase};
 
     #[tokio::test]
     async fn job_cookies_protect_status_from_other_owners() {
@@ -434,5 +443,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn active_job_rejects_login_state_changes() {
+        let directory = tempdir().unwrap();
+        let public = directory.path().join("public");
+        std::fs::create_dir_all(&public).unwrap();
+        std::fs::write(public.join("index.html"), "ok").unwrap();
+        let manager = JobManager::new(Config::development(directory.path().join("jobs"), public))
+            .await
+            .unwrap();
+        let (job, owner) = manager.create().await.unwrap();
+        job.update(|status| status.phase = JobPhase::Queued)
+            .await
+            .unwrap();
+        let cookie = format!("qzone_job={}; qzone_owner={owner}", job.id);
+        let app = router(manager);
+        for path in ["/api/login/qr", "/api/login/poll"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("origin", "http://localhost")
+                        .header("cookie", &cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+        }
     }
 }
