@@ -1,0 +1,23 @@
+services:
+  web:
+    image: ghcr.io/youren1320/qzone-archive-web:${QZONE_IMAGE_TAG:-latest}
+    build:
+      context: .
+    container_name: qzone-archive-web
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8091:8091"
+    volumes:
+      - /opt/qzone-archive-web/data:/data/jobs
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 768m
+    cpus: 1.0

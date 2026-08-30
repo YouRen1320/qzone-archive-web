@@ -1,0 +1,11 @@
+/frontend/node_modules/
+/frontend/dist/
+/backend/target/
+/.env
+/.env.*
+!/env.example
+/data/
+*.sqlite
+*.sqlite3
+*.zip
+.DS_Store

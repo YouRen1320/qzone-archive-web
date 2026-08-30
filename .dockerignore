@@ -1,0 +1,9 @@
+.git
+.github
+**/node_modules
+**/dist
+**/target
+data
+*.zip
+*.sqlite*
+.DS_Store
