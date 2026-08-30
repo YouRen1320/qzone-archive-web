@@ -5,6 +5,7 @@
 /.env.*
 !/env.example
 /data/
+/work/
 *.sqlite
 *.sqlite3
 *.zip
