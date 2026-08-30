@@ -40,7 +40,7 @@ Do not put QQ cookies or user credentials in this file.
 Set `QZONE_IMAGE_TAG` to a tested release tag instead of relying on `latest`:
 
 ```bash
-export QZONE_IMAGE_TAG=v0.1.1
+export QZONE_IMAGE_TAG=v0.1.2
 docker compose pull
 docker compose up -d
 docker compose ps
