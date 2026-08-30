@@ -8,7 +8,7 @@ repository = "https://github.com/YouRen1320/qzone-archive-web"
 
 [dependencies]
 axum = { version = "0.8", features = ["http2", "json", "macros", "tokio"] }
-axum-extra = { version = "0.10", features = ["cookie"] }
+axum-extra = { version = "0.12", features = ["cookie"] }
 base64 = "0.22"
 cookie = "0.18"
 fs2 = "0.4"
