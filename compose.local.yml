@@ -1,0 +1,8 @@
+services:
+  web:
+    # Local development builds from this checkout and keeps temporary jobs inside it.
+    image: qzone-archive-web:local
+    build:
+      context: .
+    volumes:
+      - ./data:/data/jobs

@@ -56,8 +56,7 @@ Rust + Axum 单体服务
 
 ```bash
 cp env.example .env
-docker compose build
-docker compose up -d
+docker compose -f compose.yml -f compose.local.yml up -d --build
 curl --fail http://127.0.0.1:8091/api/health
 ```
 
@@ -69,6 +68,8 @@ QZONE_SECURE_COOKIES=false
 ```
 
 然后访问 <http://localhost:8091>。
+
+`compose.yml` 只拉取发布镜像，供生产部署使用；`compose.local.yml` 才会从当前源码构建，避免生产服务器意外现场编译。
 
 生产部署必须恢复 HTTPS 和安全 Cookie。完整步骤见 [部署手册](docs/deployment.md)。
 
