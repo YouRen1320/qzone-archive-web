@@ -69,7 +69,7 @@ QZONE_SECURE_COOKIES=false
 
 然后访问 <http://localhost:8091>。
 
-`compose.yml` 只拉取发布镜像，供生产部署使用；`compose.local.yml` 才会从当前源码构建，避免生产服务器意外现场编译。
+`compose.yml` 只使用已经构建好的镜像，供生产部署使用；`compose.local.yml` 才会从当前源码构建，避免生产服务器意外现场编译。公开版本可从 [GitHub Releases](https://github.com/YouRen1320/qzone-archive-web/releases) 匿名下载带 SHA-256 校验的 Linux x86_64 镜像包，不依赖 GHCR 登录。
 
 生产部署必须恢复 HTTPS 和安全 Cookie。完整步骤见 [部署手册](docs/deployment.md)。
 

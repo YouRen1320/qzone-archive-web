@@ -6,7 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -36,3 +36,31 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Build public release archive
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          tags: qzone-archive-web:${{ github.ref_name }}
+          outputs: type=docker,dest=${{ runner.temp }}/qzone-archive-web-${{ github.ref_name }}-linux-amd64.tar
+          cache-from: type=gha
+      - name: Compress and checksum release archive
+        shell: bash
+        run: |
+          cd "${RUNNER_TEMP}"
+          gzip --best --no-name "qzone-archive-web-${GITHUB_REF_NAME}-linux-amd64.tar"
+          sha256sum "qzone-archive-web-${GITHUB_REF_NAME}-linux-amd64.tar.gz" > SHA256SUMS
+      - name: Publish public release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          archive="${RUNNER_TEMP}/qzone-archive-web-${GITHUB_REF_NAME}-linux-amd64.tar.gz"
+          checksum="${RUNNER_TEMP}/SHA256SUMS"
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${archive}" "${checksum}" --clobber --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${GITHUB_REF_NAME}" "${archive}" "${checksum}" \
+              --generate-notes --title "${GITHUB_REF_NAME}" --verify-tag --repo "${GITHUB_REPOSITORY}"
+          fi

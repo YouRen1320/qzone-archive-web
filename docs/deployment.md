@@ -13,13 +13,15 @@ sudo install -d -m 0755 /opt/qzone-archive-web
 sudo install -d -m 0700 -o 10001 -g 10001 /opt/qzone-archive-web/data
 ```
 
-Place `compose.yml` and `.env` in `/opt/qzone-archive-web`. The data directory is deliberately private and belongs to the unprivileged container user.
+Place `compose.yml` and `.env` in `/opt/qzone-archive-web`. The data directory is deliberately private and belongs to the unprivileged container user. Start from `env.example`, which pins the public release image name and version used below.
 
 The production Compose file is image-only: it never falls back to building source on the server. Local source builds use `compose.local.yml` as an explicit override.
 
 Recommended `.env` for the initial 2 GiB host:
 
 ```dotenv
+QZONE_IMAGE=qzone-archive-web
+QZONE_IMAGE_TAG=v0.1.3
 QZONE_BIND=0.0.0.0:8091
 QZONE_DATA_DIR=/data/jobs
 QZONE_PUBLIC_ORIGIN=https://qzone.iyouren.top
@@ -35,19 +37,26 @@ RUST_LOG=qzone_archive_web=info,tower_http=info
 
 Do not put QQ cookies or user credentials in this file.
 
-## 3. Start the pinned image
+## 3. Load and start the pinned public release
 
-Set `QZONE_IMAGE_TAG` to a tested release tag instead of relying on `latest`:
+The canonical anonymous deployment path is the checksum-protected image archive attached to the public GitHub Release. Download and verify the exact tag before loading it:
 
 ```bash
-export QZONE_IMAGE_TAG=v0.1.2
-docker compose pull
+release=v0.1.3
+base_url="https://github.com/YouRen1320/qzone-archive-web/releases/download/${release}"
+curl --fail --location --remote-name "${base_url}/qzone-archive-web-${release}-linux-amd64.tar.gz"
+curl --fail --location --remote-name "${base_url}/SHA256SUMS"
+sha256sum --check SHA256SUMS
+gzip --decompress --stdout "qzone-archive-web-${release}-linux-amd64.tar.gz" | docker load
+docker image inspect "qzone-archive-web:${release}" >/dev/null
 docker compose up -d
 docker compose ps
 curl --fail http://127.0.0.1:8091/api/health
 ```
 
-The container binds only to loopback, runs without Linux capabilities, has a read-only root filesystem, and is limited to one CPU and 768 MiB RAM.
+Keep `QZONE_IMAGE=qzone-archive-web` and the same `QZONE_IMAGE_TAG` in `.env`; Compose will then use the verified local image without contacting a registry. The container binds only to loopback, runs without Linux capabilities, has a read-only root filesystem, and is limited to one CPU and 768 MiB RAM.
+
+GHCR is an optional authenticated or public-registry path. Its package visibility is managed separately from repository visibility. To use it, set `QZONE_IMAGE=ghcr.io/youren1320/qzone-archive-web`, authenticate when required, and run `docker compose pull` before `docker compose up -d`.
 
 ## 4. Add the Nginx site and TLS
 
@@ -76,9 +85,9 @@ Run these checks before inviting users:
 
 ## Updates
 
+Download and verify the new Release archive exactly as in step 3, load it, then change only `QZONE_IMAGE_TAG` in `.env`:
+
 ```bash
-export QZONE_IMAGE_TAG=v0.2.0
-docker compose pull
 docker compose up -d
 curl --fail http://127.0.0.1:8091/api/health
 ```
@@ -90,10 +99,11 @@ Do not update while an archive is active: a restart intentionally destroys in-me
 Keep the previous immutable tag. If health or smoke checks fail:
 
 ```bash
-export QZONE_IMAGE_TAG=v0.1.0
 docker compose up -d
 curl --fail http://127.0.0.1:8091/api/health
 ```
+
+For rollback, set `QZONE_IMAGE_TAG` in `.env` back to an already loaded immutable tag before running the commands above.
 
 If the service must be removed, stop its Compose project and remove only its dedicated Nginx server block. Preserve `/opt/qzone-archive-web/data` long enough to let the operator decide whether active temporary jobs should be securely deleted; never recursively target `/opt` or another broad directory.
 
