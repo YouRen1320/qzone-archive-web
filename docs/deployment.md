@@ -15,6 +15,8 @@ sudo install -d -m 0700 -o 10001 -g 10001 /opt/qzone-archive-web/data
 
 Place `compose.yml` and `.env` in `/opt/qzone-archive-web`. The data directory is deliberately private and belongs to the unprivileged container user.
 
+The production Compose file is image-only: it never falls back to building source on the server. Local source builds use `compose.local.yml` as an explicit override.
+
 Recommended `.env` for the initial 2 GiB host:
 
 ```dotenv

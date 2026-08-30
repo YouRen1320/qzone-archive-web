@@ -1,8 +1,6 @@
 services:
   web:
     image: ghcr.io/youren1320/qzone-archive-web:${QZONE_IMAGE_TAG:-latest}
-    build:
-      context: .
     container_name: qzone-archive-web
     restart: unless-stopped
     env_file:
