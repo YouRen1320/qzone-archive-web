@@ -247,14 +247,12 @@ describe('resource cleanup', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('deletes old state, closes its resources, and initializes a fresh private task', async () => {
+  it('deletes old state and closes its resources without allocating a replacement task', async () => {
     const oldStatus = makeStatus('awaitingLogin', { jobId: 'job-old' })
-    const freshStatus = makeStatus('awaitingLogin', { jobId: 'job-fresh' })
     const fetchMock = mockFetchSequence(
       jsonResponse(oldStatus),
       jsonResponse({ qrImage: 'data:image/png;base64,b2xk', message: '请扫码' }),
       emptyResponse(),
-      jsonResponse(freshStatus),
     )
     const { job } = createJob()
     await job.initialize()
@@ -269,15 +267,26 @@ describe('resource cleanup', () => {
       '/api/job',
       '/api/login/qr',
       '/api/job',
-      '/api/job',
     ])
     expect(fetchMock.mock.calls[2][1]).toEqual(expect.objectContaining({ method: 'DELETE' }))
     expect(oldSource.close).toHaveBeenCalled()
-    expect(MockEventSource.instances).toHaveLength(2)
-    expect(job.status.value).toEqual(freshStatus)
+    expect(MockEventSource.instances).toHaveLength(1)
+    expect(job.status.value).toBeNull()
     expect(job.qrImage.value).toBe('')
     expect(job.error.value).toBe('')
     expect(job.busy.value).toBe(false)
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('can look for a restored task without creating one for a local-only viewer', async () => {
+    const fetchMock = mockFetchSequence(jsonResponse({ error: { message: '任务不存在' } }, 404))
+    const { job } = createJob()
+
+    await job.initialize(false)
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(job.status.value).toBeNull()
+    expect(job.error.value).toBe('')
+    expect(MockEventSource.instances).toHaveLength(0)
   })
 })

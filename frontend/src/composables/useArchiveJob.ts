@@ -3,6 +3,12 @@ import type { ApiErrorBody, JobStatus, LoginResult } from '../types/job'
 
 const POLL_INTERVAL_MS = 2_000
 
+class RequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: 'same-origin',
@@ -14,7 +20,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as ApiErrorBody
-    throw new Error(body.error?.message || `请求失败（${response.status}）`)
+    throw new RequestError(body.error?.message || `请求失败（${response.status}）`, response.status)
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
@@ -33,19 +39,29 @@ export function useArchiveJob() {
     !!status.value && ['queued', 'archiving', 'downloadingMedia', 'packaging'].includes(status.value.phase),
   )
 
-  async function initialize() {
+  async function initialize(createIfMissing = true) {
     busy.value = true
     error.value = ''
     try {
-      status.value = await request<JobStatus>('/api/job').catch(() =>
-        request<JobStatus>('/api/jobs', { method: 'POST' }),
-      )
-      connectEvents()
+      try {
+        status.value = await request<JobStatus>('/api/job')
+      } catch (reason) {
+        if (!(reason instanceof RequestError) || ![401, 404].includes(reason.status)) throw reason
+        status.value = createIfMissing
+          ? await request<JobStatus>('/api/jobs', { method: 'POST' })
+          : null
+      }
+      if (status.value) connectEvents()
     } catch (reason) {
       error.value = messageOf(reason)
     } finally {
       busy.value = false
     }
+  }
+
+  async function ensureJob() {
+    if (!status.value) await initialize(true)
+    return status.value
   }
 
   function connectEvents() {
@@ -128,7 +144,6 @@ export function useArchiveJob() {
       await request<void>('/api/job', { method: 'DELETE' })
       status.value = null
       qrImage.value = ''
-      await initialize()
     } catch (reason) {
       error.value = messageOf(reason)
     } finally {
@@ -155,6 +170,7 @@ export function useArchiveJob() {
     error,
     active,
     initialize,
+    ensureJob,
     requestQr,
     startArchive,
     cancelArchive,

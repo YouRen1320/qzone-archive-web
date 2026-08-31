@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, onScopeDispose, ref, watch } from 'vue'
+import { computed, onMounted, onScopeDispose, ref, useTemplateRef, watch } from 'vue'
+import ArchiveViewer from './components/ArchiveViewer.vue'
 import JiangnanStage from './components/JiangnanStage.vue'
 import MemoryGallery from './components/MemoryGallery.vue'
 import PrivacyPanel from './components/PrivacyPanel.vue'
 import { useArchiveJob } from './composables/useArchiveJob'
 import { useRainSound } from './composables/useRainSound'
+import { openLocalArchive, openServerArchive } from './services/archiveSource'
+import type { ArchiveSession } from './types/archive'
 import type { JobPhase } from './types/job'
 import { mediaProgress, remainingLabel } from './utils'
 
@@ -16,18 +19,22 @@ const {
   error,
   active,
   initialize,
+  ensureJob,
   requestQr,
   startArchive,
   cancelArchive,
   deleteJob,
 } = useArchiveJob()
 const rainSound = useRainSound()
+const archiveFileInput = useTemplateRef<HTMLInputElement>('archiveFileInput')
 
 const includeMedia = ref(true)
 const pageDelayMs = ref(3_000)
 const entered = ref(false)
 const maxReachedChapter = ref(0)
 const now = ref(Date.now())
+const archiveSession = ref<ArchiveSession | null>(null)
+const viewerBusy = ref(false)
 let clockTimer: number | undefined
 
 const chapterLabels = ['门外', '扫码', '选择', '整理', '装包', '保存']
@@ -109,7 +116,7 @@ const recoveryNotice = computed(() => {
 })
 
 const liveAnnouncement = computed(() => {
-  if (!status.value) return '正在建立临时任务'
+  if (!status.value) return '可以开始新归档，或打开保存在本机的备份'
   if (status.value.phase === 'ready') {
     return `归档包已准备好，共 ${status.value.saved.toLocaleString()} 条记录。${status.value.message}`
   }
@@ -128,7 +135,8 @@ watch(chapterIndex, (current) => {
 }, { immediate: true })
 
 onMounted(() => {
-  void initialize()
+  // Looking for an existing cookie must not allocate a server task for local-only viewers.
+  void initialize(false)
   clockTimer = window.setInterval(() => (now.value = Date.now()), 30_000)
 })
 
@@ -141,10 +149,49 @@ async function confirmDelete() {
     await deleteJob()
   }
 }
+
+async function enterArchiveFlow() {
+  const current = await ensureJob()
+  if (current) entered.value = true
+}
+
+async function openCurrentArchive() {
+  viewerBusy.value = true
+  error.value = ''
+  try {
+    archiveSession.value = await openServerArchive()
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '回忆册暂时无法打开'
+  } finally {
+    viewerBusy.value = false
+  }
+}
+
+function chooseLocalArchive() {
+  archiveFileInput.value?.click()
+}
+
+async function openChosenArchive(event: Event) {
+  const input = event.currentTarget as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  viewerBusy.value = true
+  error.value = ''
+  try {
+    archiveSession.value = await openLocalArchive(file)
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '这个备份无法打开'
+  } finally {
+    viewerBusy.value = false
+  }
+}
 </script>
 
 <template>
-  <div class="app-stage" :class="`tone-${chapterTone}`" :data-current="chapterIndex" :aria-busy="busy">
+  <ArchiveViewer v-if="archiveSession" :session="archiveSession" @close="archiveSession = null" />
+
+  <div v-else class="app-stage" :class="`tone-${chapterTone}`" :data-current="chapterIndex" :aria-busy="busy || viewerBusy">
     <a class="skip-link" href="#archive-operation">跳到归档操作</a>
 
     <JiangnanStage :phase="scenePhase" :logged-in="status?.loggedIn ?? false" :progress="mediaPercent / 100" />
@@ -182,14 +229,26 @@ async function confirmDelete() {
         <button type="button" aria-label="关闭错误提示" @click="error = ''">关闭</button>
       </div>
 
+      <input
+        ref="archiveFileInput"
+        class="sr-only"
+        type="file"
+        accept=".zip,application/zip,application/x-zip-compressed"
+        aria-label="选择拾光册 ZIP 备份"
+        @change="openChosenArchive"
+      />
+
       <section v-if="!entered" class="chapter chapter--intro" aria-labelledby="intro-title">
         <p class="chapter-place"><span>00</span>门外</p>
         <h1 id="intro-title">雨还没停。</h1>
         <p class="chapter-copy">门里还有一段记录。</p>
-        <button class="primary-action pressable" type="button" :disabled="!status || busy" @click="entered = true">
-          {{ status ? '进去看看' : '正在开门' }}
+        <button class="primary-action pressable" type="button" :disabled="busy" @click="enterArchiveFlow">
+          {{ busy ? '正在开门' : '进去看看' }}
         </button>
-        <p class="chapter-note">只整理 QQ 仍能返回的内容</p>
+        <button class="local-archive-action pressable" type="button" :disabled="viewerBusy" @click="chooseLocalArchive">
+          {{ viewerBusy ? '正在打开备份' : '打开已有备份' }}
+        </button>
+        <p class="chapter-note">新归档只整理 QQ 仍能返回的内容；已有 ZIP 不会上传</p>
       </section>
 
       <section v-else-if="!status" class="chapter chapter--loading" aria-label="正在准备归档任务">
@@ -205,8 +264,16 @@ async function confirmDelete() {
           <div><dt>媒体</dt><dd>{{ status.mediaDownloaded.toLocaleString() }}</dd></div>
           <div><dt>未取回</dt><dd>{{ status.mediaFailed.toLocaleString() }}</dd></div>
         </dl>
-        <a class="primary-action pressable download-action" href="/api/download">保存到这台设备</a>
-        <p class="inline-status">ZIP 包含离线网页、JSONL 与独立 SQLite，不包含 QQ Cookie。</p>
+        <div class="ready-actions">
+          <button class="primary-action pressable" type="button" :disabled="viewerBusy" @click="openCurrentArchive">
+            {{ viewerBusy ? '正在翻开' : '打开我的回忆册' }}
+          </button>
+          <a class="download-action pressable" href="/api/download">下载完整备份 ZIP</a>
+          <button class="local-archive-action pressable" type="button" :disabled="viewerBusy" @click="chooseLocalArchive">
+            打开其他 ZIP 备份
+          </button>
+        </div>
+        <p class="inline-status">现在可以直接浏览；ZIP 用于永久保存，也能以后回到本站本机打开。</p>
         <button class="text-action danger pressable" type="button" :disabled="busy" @click="confirmDelete">立即删除服务器临时文件</button>
       </section>
 

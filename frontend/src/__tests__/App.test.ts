@@ -35,7 +35,7 @@ const phaseExpectations = [
   ['archiving', 'progress-card', /任务状态：archiving/, /安全停止/],
   ['downloadingMedia', 'progress-card', /任务状态：downloadingMedia/, /安全停止/],
   ['packaging', 'progress-card', /任务状态：packaging/, /安全停止/],
-  ['ready', 'ready-card', /24 条记录，4 个媒体文件/, /保存到这台设备/],
+  ['ready', 'ready-card', /24 条记录，4 个媒体文件/, /打开我的回忆册/],
   ['paused', 'login-card', /归档停在这里/, /显示二维码/],
   ['cancelled', 'options-card', /这次已经安全停下/, /从已有断点继续/],
   ['failed', 'login-card', /这次没有走完/, /显示二维码/],
@@ -80,6 +80,7 @@ function installJobMock(statusValue: JobStatus | null, options: { qrImage?: stri
     error,
     active,
     initialize: vi.fn().mockResolvedValue(undefined),
+    ensureJob: vi.fn().mockResolvedValue(statusValue),
     requestQr: vi.fn().mockResolvedValue(undefined),
     startArchive: vi.fn().mockResolvedValue(undefined),
     cancelArchive: vi.fn().mockResolvedValue(undefined),
@@ -128,7 +129,7 @@ describe('complete task-state rendering', () => {
     const wrapper = await mountApp()
 
     expect(job.initialize).toHaveBeenCalledOnce()
-    expect(wrapper.get('main').text()).toMatch(/建立|恢复|任务/)
+    expect(wrapper.get('main').text()).toContain('打开已有备份')
     expect(wrapper.get('main').text().trim()).not.toBe('')
   })
 
@@ -293,7 +294,7 @@ describe('progress, completion, and cleanup', () => {
     expect(wrapper.text()).toContain((1_234).toLocaleString())
     expect(wrapper.text()).toContain((98).toLocaleString())
     expect(wrapper.text()).toContain((7).toLocaleString())
-    expect(wrapper.get('a[href="/api/download"]').text()).toContain('保存到这台设备')
+    expect(wrapper.get('a[href="/api/download"]').text()).toContain('下载完整备份 ZIP')
     expect(wrapper.get('[aria-current="step"]').text()).toContain('保存')
   })
 

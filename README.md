@@ -3,7 +3,7 @@
 [![CI](https://github.com/YouRen1320/qzone-archive-web/actions/workflows/ci.yml/badge.svg)](https://github.com/YouRen1320/qzone-archive-web/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-一个非官方、隐私优先的 QQ 空间临时归档网页。用户通过 QQ 扫码登录，服务器为每个任务创建独立临时目录和 SQLite，完成后生成可下载到电脑或手机的 ZIP，并自动删除服务端数据。
+一个非官方、隐私优先的 QQ 空间临时归档网页。用户通过 QQ 扫码登录，服务器为每个任务创建独立临时目录和 SQLite，完成后既能在网页里直接翻阅，也能把完整 ZIP 下载到电脑或手机；服务端数据会自动删除。
 
 > [!IMPORTANT]
 > 本工具只能保存 QQ 在归档时仍然通过互动列表接口返回的内容。没有进入互动列表、已永久删除或媒体地址已经失效的数据，无法保证找回。
@@ -16,6 +16,7 @@
 - **任务级临时 SQLite**：每页事务提交、去重和断点都在当前用户的临时文件中完成。
 - **用完即删**：下载后缩短保留时间，也支持用户立即删除；绝对 TTL 到期后自动清理。
 - **导出可带走**：ZIP 内含离线查看器、原始 JSONL、SQLite、清单，以及成功下载的媒体文件。
+- **备份直接翻开**：完成后无需先下载；以前保存的 ZIP 也可回到首页本机打开，文件不会上传。
 - **手机友好**：响应式页面提供同机保存二维码后从 QQ 相册识别的入口。
 - **烟雨江南界面**：六个真实任务阶段对应六处雨中空间；WebGL 只做渐进增强，关闭动效或不支持时仍可完成全部操作。
 
@@ -43,13 +44,16 @@ Rust + Axum 单体服务
 
 | 文件 | 用途 |
 | --- | --- |
-| `index.html` + `data.js` | 无需安装软件的离线浏览页面 |
+| `records.json` | v2 安全阅读器使用的结构化记录，不执行归档内脚本 |
+| `index.html` + `data.js` | 兼容旧使用方式的简易离线页面 |
 | `raw-feeds.jsonl` | QQ 返回的原始互动记录，一行一条 JSON |
 | `archive.sqlite3` | 任务自己的完整结构化 SQLite，便于二次开发 |
 | `manifest.json` | 导出版本、完整性和媒体统计 |
 | `media/` | 本次成功下载的图片和视频 |
 
 导出包不包含 QQ Cookie。
+
+最省事的查看方式是访问首页，选择“打开已有备份”，再选中 ZIP。浏览器只在本机按需读取记录和媒体，不会把 ZIP 上传到服务器。v0.2.0 及之后生成的旧版 ZIP 也可用同一入口打开。
 
 ## 本地运行
 

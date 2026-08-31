@@ -21,7 +21,9 @@ QZONE_DATA_DIR/
     ├── archive.sqlite3
     ├── media/
     └── export/
-        └── qzone-archive-<timestamp>.zip
+        ├── viewer-manifest.json
+        ├── viewer-records.json
+        └── qzone-archive.zip
 ```
 
 `archive.sqlite3` is not a shared application database. It belongs to one job, is included in that user's export, and is deleted with the job. QQ login credentials exist only in the in-memory runtime associated with that job.
@@ -34,7 +36,9 @@ QZONE_DATA_DIR/
 4. A global semaphore permits one active archive on the initial 2 GiB server; additional authenticated jobs wait in FIFO order.
 5. Each page is committed transactionally to the task-local SQLite database, together with a resumable cursor.
 6. The service optionally downloads bounded media, then writes JSON, HTML, a manifest, and the SQLite database into a ZIP.
-7. The browser downloads the ZIP. The task is deleted after the configured post-download delay or the absolute TTL, whichever comes first.
+7. The ready page can stream private records and range-capable media directly into the reader, or download the complete ZIP.
+8. A saved ZIP can later be opened by the same Vue reader entirely in the browser. ZIP entries are treated as data, records are parsed as JSON, and media is expanded only when it approaches the viewport.
+9. The task is deleted after the configured post-download delay or the absolute TTL, whichever comes first.
 
 ## Presentation state
 

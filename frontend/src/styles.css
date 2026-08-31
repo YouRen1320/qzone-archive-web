@@ -397,6 +397,7 @@ button {
 }
 
 .primary-action,
+.local-archive-action,
 .text-action {
   min-height: 44px;
   cursor: pointer;
@@ -420,6 +421,20 @@ button {
   font-size: 13px;
   line-height: 1;
   text-decoration: none;
+}
+
+.local-archive-action {
+  display: inline-flex;
+  min-height: 44px;
+  margin-left: 14px;
+  padding: 0 3px;
+  align-items: center;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--chapter-color) 42%, transparent);
+  background: transparent;
+  color: var(--chapter-color);
+  cursor: pointer;
+  font-size: 11px;
 }
 
 .text-action {
@@ -807,8 +822,31 @@ button:disabled,
   margin-top: 8px;
 }
 
+.ready-actions {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  margin-top: 22px;
+}
+
+.ready-actions .primary-action {
+  margin-top: 0;
+}
+
+.ready-actions .local-archive-action {
+  margin-left: 0;
+}
+
 .download-action {
-  margin-top: 14px;
+  display: inline-flex;
+  min-height: 44px;
+  padding: 0 3px;
+  align-items: center;
+  color: var(--chapter-color);
+  font-size: 11px;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 36%, transparent);
+  text-underline-offset: 4px;
 }
 
 .task-meta {
@@ -1212,6 +1250,7 @@ button:disabled,
   .stage-header,
   .sound-icon i,
   .primary-action,
+  .local-archive-action,
   .text-action,
   .option-line input,
   .option-line input::after {
@@ -1233,6 +1272,7 @@ button:disabled,
   }
 
   .primary-action,
+  .local-archive-action,
   .sound-toggle,
   .qr-sheet {
     border: 1px solid ButtonText;
