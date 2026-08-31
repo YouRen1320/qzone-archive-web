@@ -36,6 +36,12 @@ QZONE_DATA_DIR/
 6. The service optionally downloads bounded media, then writes JSON, HTML, a manifest, and the SQLite database into a ZIP.
 7. The browser downloads the ZIP. The task is deleted after the configured post-download delay or the absolute TTL, whichever comes first.
 
+## Presentation state
+
+The Vue application maps the authoritative backend phase onto six visual spaces: entrance, QR login, options, archive progress, media/package processing, and download. Visual navigation cannot advance the job, and background scene code cannot call APIs. Failed or interrupted jobs return visually to QR login; paused or cancelled jobs return to QR or options according to the backend's current `loggedIn` value.
+
+The Jiangnan stage is progressive enhancement. Static desktop and mobile images remain usable when WebGL is unavailable. One animation scheduler owns rain, lens transitions, parallax, and progress ripples; it stops for hidden pages, reduced-motion preferences, and component disposal. The eight “雨路取景” stills are bundled interface atmosphere, explicitly labelled so they cannot be mistaken for recovered user media.
+
 ## Failure and restart behavior
 
 - A process restart deliberately destroys all QQ cookies and active login sessions.

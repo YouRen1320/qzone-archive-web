@@ -9,7 +9,8 @@
 | SSRF resistance | Media URL allowlist unit tests | Review redirects and egress logs |
 | Portable export | ZIP test requires HTML, JS, JSONL, SQLite | Open on desktop, iOS, and Android |
 | Automatic deletion | Job manager TTL tests | Observe expiry and post-download cleanup |
-| Responsive UI | Type check, component utility tests, production build | Browser viewport and device checks |
+| Responsive UI | Type check, 11-phase component tests, axe checks, production build | 1440×900, 1366×768, 375×812, 320×720 and short-landscape browser checks |
+| Scene safety | Phase mapping tests; static scan rejects API/storage use and inline styles in the scene layer | WebGL, static fallback, reduced-motion and production-CSP console checks |
 | Rollback isolation | Container build and health check | Roll back tag; verify existing sites |
 
 Tests deliberately do not make QQ network requests or contain real account data. A real account smoke test is a separate manual deployment gate.
