@@ -27,10 +27,15 @@ watch([search, category, year], () => {
   searchTimer = window.setTimeout(() => void loadPage(true), 250)
 })
 
-onMounted(() => void loadPage(true))
+onMounted(() => {
+  // The immersive workflow locks document scrolling; the reader explicitly restores it.
+  document.body.classList.add('archive-reader-open')
+  void loadPage(true)
+})
 onBeforeUnmount(() => {
   controller?.abort()
   if (searchTimer !== undefined) window.clearTimeout(searchTimer)
+  document.body.classList.remove('archive-reader-open')
 })
 
 async function loadPage(reset = false) {

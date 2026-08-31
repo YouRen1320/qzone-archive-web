@@ -326,6 +326,7 @@ describe('progress, completion, and cleanup', () => {
     expect(archiveApiMock.fetchArchiveManifest).toHaveBeenCalledOnce()
     expect(wrapper.get('a[href="/api/download"]').text()).toContain('保存 ZIP')
     expect(wrapper.text()).not.toContain('打开已有备份')
+    expect(document.body.classList.contains('archive-reader-open')).toBe(true)
   })
 
   it('dismisses a reported error through an explicitly named control', async () => {

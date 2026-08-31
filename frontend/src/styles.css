@@ -49,6 +49,12 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+body.archive-reader-open {
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--dawn-milk);
+}
+
 body,
 button,
 select,
