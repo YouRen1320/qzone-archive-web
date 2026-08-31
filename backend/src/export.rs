@@ -46,12 +46,13 @@ fn package_blocking(job: &JobRuntime, owner_uin: &str, complete: bool) -> Result
     std::fs::create_dir_all(&staging).map_err(|error| format!("创建导出暂存区失败：{error}"))?;
 
     let result = (|| {
+        let records = database::export_records(&job.db_path(), owner_uin)?;
+        database::replace_viewer_records(&job.db_path(), &records)?;
         database::checkpoint_database(&job.db_path())?;
         let database_copy = staging.join("archive.sqlite3");
         std::fs::copy(job.db_path(), &database_copy)
             .map_err(|error| format!("复制任务数据库失败：{error}"))?;
         database::write_raw_jsonl(&job.db_path(), owner_uin, &staging.join("raw-feeds.jsonl"))?;
-        let records = database::export_records(&job.db_path(), owner_uin)?;
         let status = job.status_blocking();
         let manifest = Manifest {
             format_version: 2,
@@ -73,11 +74,9 @@ fn package_blocking(job: &JobRuntime, owner_uin: &str, complete: bool) -> Result
         std::fs::write(staging.join("README.txt"), EXPORT_README)
             .map_err(|error| format!("写入导出说明失败：{error}"))?;
 
-        // The ready-state viewer streams these private copies without reopening SQLite or the ZIP.
+        // The manifest is small and immutable; record pages come from the task-local SQLite copy.
         std::fs::copy(staging.join("manifest.json"), job.viewer_manifest_path())
             .map_err(|error| format!("准备在线查看清单失败：{error}"))?;
-        std::fs::copy(staging.join("records.json"), job.viewer_records_path())
-            .map_err(|error| format!("准备在线查看记录失败：{error}"))?;
 
         let target = job.download_path();
         let temporary = export_dir.join("qzone-archive.zip.part");
@@ -174,8 +173,8 @@ fn add_tree(
 
 const EXPORT_README: &str = r#"QQ 空间归档导出
 
-1. 推荐访问 https://qzone.iyouren.top/ 并选择“打开已有备份”，ZIP 只在本机读取，不会上传。
-2. index.html 仍可作为电脑上的简易离线查看入口。
+1. 恢复完成后，可以在原网页中直接查看本次记录。
+2. index.html 可作为电脑上的简易离线查看入口；手机端建议长期保存本 ZIP。
 3. records.json 是安全查看器使用的结构化记录；raw-feeds.jsonl 保存 QQ 接口返回的原始互动记录。
 4. archive.sqlite3 是本任务独立的 SQLite 数据库，适合二次开发或长期备份。
 5. media/ 保存本次成功下载的图片和视频；失败数量见 manifest.json。

@@ -87,10 +87,6 @@ impl JobRuntime {
         self.export_dir().join("viewer-manifest.json")
     }
 
-    pub fn viewer_records_path(&self) -> PathBuf {
-        self.export_dir().join("viewer-records.json")
-    }
-
     pub async fn status(&self) -> JobStatus {
         self.status.read().await.clone()
     }

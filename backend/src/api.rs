@@ -2,7 +2,7 @@ use std::{convert::Infallible, io::SeekFrom, path::PathBuf, sync::Arc};
 
 use axum::{
     body::Body,
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::{
         header::{
             ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE,
@@ -17,6 +17,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use futures_util::{stream, Stream, StreamExt};
+use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 use tokio_util::io::ReaderStream;
@@ -27,6 +28,7 @@ use tower_http::{
 };
 
 use crate::{
+    database::{self, ViewerRecordsQuery},
     error::AppError,
     job::{JobManager, JobRuntime},
     model::{HealthResponse, JobPhase, JobStatus, LoginResponse, QrResponse, StartArchiveRequest},
@@ -283,14 +285,56 @@ async fn viewer_manifest(
 async fn viewer_records(
     State(state): State<AppState>,
     jar: CookieJar,
-) -> Result<Response, AppError> {
+    Query(query): Query<ViewerQuery>,
+) -> Result<Json<database::ViewerRecordsPage>, AppError> {
     let job = ready_job(&state, &jar).await?;
-    stream_private_file(
-        job.viewer_records_path(),
-        "application/json; charset=utf-8",
-        None,
-    )
-    .await
+    let search = query
+        .q
+        .map(|value| value.trim().chars().take(100).collect::<String>())
+        .filter(|value| !value.is_empty());
+    let category = query.category.filter(|value| !value.is_empty());
+    if category
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "self" | "other" | "guestbook"))
+    {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_viewer_category",
+            "记录分类无效",
+        ));
+    }
+    if query
+        .year
+        .is_some_and(|year| !(1970..=3000).contains(&year))
+    {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_viewer_year",
+            "记录年份无效",
+        ));
+    }
+    let request = ViewerRecordsQuery {
+        offset: query.offset.unwrap_or(0),
+        limit: query.limit.unwrap_or(30).clamp(1, 60),
+        search,
+        category,
+        year: query.year,
+    };
+    let path = job.db_path();
+    let page = tokio::task::spawn_blocking(move || database::viewer_records(&path, request))
+        .await
+        .map_err(|_| AppError::internal("阅读记录查询意外停止"))?
+        .map_err(AppError::internal)?;
+    Ok(Json(page))
+}
+
+#[derive(Debug, Deserialize)]
+struct ViewerQuery {
+    offset: Option<u64>,
+    limit: Option<u64>,
+    q: Option<String>,
+    category: Option<String>,
+    year: Option<i32>,
 }
 
 async fn viewer_media(
@@ -692,7 +736,20 @@ mod tests {
         let (job, owner) = manager.create().await.unwrap();
         std::fs::create_dir_all(job.media_dir()).unwrap();
         std::fs::write(job.viewer_manifest_path(), r#"{"formatVersion":2}"#).unwrap();
-        std::fs::write(job.viewer_records_path(), "[]").unwrap();
+        crate::database::initialize(&job.db_path()).unwrap();
+        crate::database::replace_viewer_records(
+            &job.db_path(),
+            &[crate::database::ExportRecord {
+                id: 1,
+                cell_id: "cell-1".into(),
+                published_at: 1_735_689_600,
+                content: Some("雨声".into()),
+                author_name: Some("故人".into()),
+                category: "other".into(),
+                media: vec!["media/clip.mp4".into()],
+            }],
+        )
+        .unwrap();
         std::fs::write(job.media_dir().join("clip.mp4"), b"0123456789").unwrap();
         job.update(|status| {
             status.phase = JobPhase::Ready;
@@ -729,6 +786,22 @@ mod tests {
             manifest.headers()["cache-control"],
             "private, no-store, max-age=0"
         );
+
+        let records = app
+            .clone()
+            .oneshot(
+                Request::get("/api/archive/viewer/records?limit=1&q=%E9%9B%A8%E5%A3%B0")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(records.status(), StatusCode::OK);
+        let records = to_bytes(records.into_body(), 4096).await.unwrap();
+        let records: serde_json::Value = serde_json::from_slice(&records).unwrap();
+        assert_eq!(records["total"], 1);
+        assert_eq!(records["items"][0]["content"], "雨声");
 
         let media = app
             .oneshot(

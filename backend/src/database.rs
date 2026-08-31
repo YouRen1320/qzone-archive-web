@@ -10,6 +10,7 @@ use std::{
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
+use time::{Date, Month, PrimitiveDateTime, Time};
 
 #[derive(Clone, Debug)]
 pub struct Checkpoint {
@@ -44,6 +45,25 @@ pub struct ExportRecord {
     pub author_name: Option<String>,
     pub category: String,
     pub media: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ViewerRecordsQuery {
+    pub offset: u64,
+    pub limit: u64,
+    pub search: Option<String>,
+    pub category: Option<String>,
+    pub year: Option<i32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewerRecordsPage {
+    pub items: Vec<ExportRecord>,
+    pub total: u64,
+    pub offset: u64,
+    pub next_offset: Option<u64>,
+    pub years: Vec<i32>,
 }
 
 struct ParsedFeed {
@@ -133,7 +153,20 @@ pub fn initialize(path: &Path) -> Result<(), String> {
                UNIQUE(owner_uin, cell_id, kind, ordinal)
              );
              CREATE INDEX IF NOT EXISTS idx_archive_media_status
-               ON archive_media(owner_uin, status, id);",
+               ON archive_media(owner_uin, status, id);
+             CREATE TABLE IF NOT EXISTS archive_viewer_records (
+               id INTEGER PRIMARY KEY,
+               cell_id TEXT NOT NULL,
+               published_at INTEGER NOT NULL,
+               content TEXT,
+               author_name TEXT,
+               category TEXT NOT NULL,
+               media_json TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_archive_viewer_time
+               ON archive_viewer_records(published_at DESC, id DESC);
+             CREATE INDEX IF NOT EXISTS idx_archive_viewer_category_time
+               ON archive_viewer_records(category, published_at DESC, id DESC);",
         )
         .map_err(|error| format!("初始化任务数据库失败：{error}"))?;
     Ok(())
@@ -368,6 +401,157 @@ pub fn export_records(path: &Path, owner_uin: &str) -> Result<Vec<ExportRecord>,
             },
         )
         .collect()
+}
+
+// The viewer table is a frozen, owner-filtered projection of the final export. It prevents
+// a later rescan with another QQ account from ever mixing records in the ready-state reader.
+pub fn replace_viewer_records(path: &Path, records: &[ExportRecord]) -> Result<(), String> {
+    let mut connection = open(path)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("无法开始阅读数据事务：{error}"))?;
+    transaction
+        .execute("DELETE FROM archive_viewer_records", [])
+        .map_err(|error| format!("清理旧阅读数据失败：{error}"))?;
+    {
+        let mut statement = transaction
+            .prepare(
+                "INSERT INTO archive_viewer_records
+                 (id,cell_id,published_at,content,author_name,category,media_json)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            )
+            .map_err(|error| format!("准备阅读数据失败：{error}"))?;
+        for record in records {
+            let media_json = serde_json::to_string(&record.media)
+                .map_err(|error| format!("序列化阅读媒体失败：{error}"))?;
+            statement
+                .execute(params![
+                    record.id,
+                    record.cell_id,
+                    record.published_at,
+                    record.content,
+                    record.author_name,
+                    record.category,
+                    media_json
+                ])
+                .map_err(|error| format!("写入阅读数据失败：{error}"))?;
+        }
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("提交阅读数据失败：{error}"))
+}
+
+pub fn viewer_records(path: &Path, query: ViewerRecordsQuery) -> Result<ViewerRecordsPage, String> {
+    let connection = open(path)?;
+    let (year_start, year_end) = query.year.map(year_bounds).transpose()?.unzip();
+    let search = query.search.as_deref().map(search_pattern);
+    let filters = params![query.category, year_start, year_end, search];
+    let predicate = "(?1 IS NULL OR category=?1)
+      AND (?2 IS NULL OR published_at>=?2)
+      AND (?3 IS NULL OR published_at<?3)
+      AND (?4 IS NULL OR content LIKE ?4 ESCAPE '\\' OR author_name LIKE ?4 ESCAPE '\\')";
+
+    let total: u64 = connection
+        .query_row(
+            &format!("SELECT COUNT(*) FROM archive_viewer_records WHERE {predicate}"),
+            filters,
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("统计阅读记录失败：{error}"))?;
+
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT id,cell_id,published_at,content,author_name,category,media_json
+             FROM archive_viewer_records WHERE {predicate}
+             ORDER BY published_at DESC,id DESC LIMIT ?5 OFFSET ?6"
+        ))
+        .map_err(|error| format!("准备阅读查询失败：{error}"))?;
+    let rows = statement
+        .query_map(
+            params![
+                query.category,
+                year_start,
+                year_end,
+                search,
+                query.limit,
+                query.offset
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .map_err(|error| format!("读取归档记录失败：{error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("读取归档记录失败：{error}"))?;
+    let items = rows
+        .into_iter()
+        .map(
+            |(id, cell_id, published_at, content, author_name, category, media_json)| {
+                let media = serde_json::from_str(&media_json)
+                    .map_err(|error| format!("解析阅读媒体失败：{error}"))?;
+                Ok(ExportRecord {
+                    id,
+                    cell_id,
+                    published_at,
+                    content,
+                    author_name,
+                    category,
+                    media,
+                })
+            },
+        )
+        .collect::<Result<Vec<_>, String>>()?;
+    let years = connection
+        .prepare(
+            "SELECT DISTINCT CAST(strftime('%Y', published_at, 'unixepoch') AS INTEGER) AS year
+             FROM archive_viewer_records WHERE published_at>0 ORDER BY year DESC",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, i32>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| format!("读取归档年份失败：{error}"))?;
+    let consumed = query.offset.saturating_add(items.len() as u64);
+    Ok(ViewerRecordsPage {
+        items,
+        total,
+        offset: query.offset,
+        next_offset: (consumed < total).then_some(consumed),
+        years,
+    })
+}
+
+fn year_bounds(year: i32) -> Result<(i64, i64), String> {
+    let start =
+        Date::from_calendar_date(year, Month::January, 1).map_err(|_| "归档年份无效".to_owned())?;
+    let end = Date::from_calendar_date(year + 1, Month::January, 1)
+        .map_err(|_| "归档年份无效".to_owned())?;
+    Ok((
+        PrimitiveDateTime::new(start, Time::MIDNIGHT)
+            .assume_utc()
+            .unix_timestamp(),
+        PrimitiveDateTime::new(end, Time::MIDNIGHT)
+            .assume_utc()
+            .unix_timestamp(),
+    ))
+}
+
+fn search_pattern(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
 }
 
 pub fn write_raw_jsonl(path: &Path, owner_uin: &str, output: &Path) -> Result<(), String> {
@@ -690,7 +874,10 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::{export_records, initialize, load_checkpoint, pending_media, save_page};
+    use super::{
+        export_records, initialize, load_checkpoint, pending_media, replace_viewer_records,
+        save_page, viewer_records, ViewerRecordsQuery,
+    };
 
     #[test]
     fn saves_deduplicated_feeds_checkpoint_and_media() {
@@ -717,5 +904,78 @@ mod tests {
         let records = export_records(&path, "12345").unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].content.as_deref(), Some("测试动态"));
+    }
+
+    #[test]
+    fn viewer_projection_pages_and_filters_without_mixing_owners() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("archive.sqlite3");
+        initialize(&path).unwrap();
+        let records = vec![
+            super::ExportRecord {
+                id: 1,
+                cell_id: "older".into(),
+                published_at: 1_704_067_200,
+                content: Some("冬天的桥".into()),
+                author_name: Some("自己".into()),
+                category: "self".into(),
+                media: vec!["media/a.jpg".into()],
+            },
+            super::ExportRecord {
+                id: 2,
+                cell_id: "newer".into(),
+                published_at: 1_735_689_600,
+                content: Some("雨落在窗前".into()),
+                author_name: Some("故人".into()),
+                category: "other".into(),
+                media: vec![],
+            },
+        ];
+        replace_viewer_records(&path, &records).unwrap();
+
+        let first = viewer_records(
+            &path,
+            ViewerRecordsQuery {
+                offset: 0,
+                limit: 1,
+                search: None,
+                category: None,
+                year: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(first.total, 2);
+        assert_eq!(first.items[0].cell_id, "newer");
+        assert_eq!(first.next_offset, Some(1));
+        assert_eq!(first.years, vec![2025, 2024]);
+
+        let filtered = viewer_records(
+            &path,
+            ViewerRecordsQuery {
+                offset: 0,
+                limit: 30,
+                search: Some("窗前".into()),
+                category: Some("other".into()),
+                year: Some(2025),
+            },
+        )
+        .unwrap();
+        assert_eq!(filtered.total, 1);
+        assert_eq!(filtered.items[0].author_name.as_deref(), Some("故人"));
+
+        replace_viewer_records(&path, &records[..1]).unwrap();
+        let replaced = viewer_records(
+            &path,
+            ViewerRecordsQuery {
+                offset: 0,
+                limit: 30,
+                search: None,
+                category: None,
+                year: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(replaced.total, 1);
+        assert_eq!(replaced.items[0].cell_id, "older");
     }
 }

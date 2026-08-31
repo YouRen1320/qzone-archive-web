@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, onScopeDispose, ref, useTemplateRef, watch } from 'vue'
+import { computed, onMounted, onScopeDispose, ref, watch } from 'vue'
 import ArchiveViewer from './components/ArchiveViewer.vue'
 import JiangnanStage from './components/JiangnanStage.vue'
 import MemoryGallery from './components/MemoryGallery.vue'
 import PrivacyPanel from './components/PrivacyPanel.vue'
 import { useArchiveJob } from './composables/useArchiveJob'
 import { useRainSound } from './composables/useRainSound'
-import { openLocalArchive, openServerArchive } from './services/archiveSource'
-import type { ArchiveSession } from './types/archive'
+import { fetchArchiveManifest } from './services/archiveApi'
+import type { ArchiveManifest } from './types/archive'
 import type { JobPhase } from './types/job'
 import { mediaProgress, remainingLabel } from './utils'
 
@@ -26,15 +26,13 @@ const {
   deleteJob,
 } = useArchiveJob()
 const rainSound = useRainSound()
-const archiveFileInput = useTemplateRef<HTMLInputElement>('archiveFileInput')
-
 const includeMedia = ref(true)
 const pageDelayMs = ref(3_000)
 const entered = ref(false)
 const maxReachedChapter = ref(0)
 const now = ref(Date.now())
-const archiveSession = ref<ArchiveSession | null>(null)
-const viewerBusy = ref(false)
+const archiveManifest = ref<ArchiveManifest | null>(null)
+const viewerLoading = ref(false)
 let clockTimer: number | undefined
 
 const chapterLabels = ['门外', '扫码', '选择', '整理', '装包', '保存']
@@ -116,7 +114,7 @@ const recoveryNotice = computed(() => {
 })
 
 const liveAnnouncement = computed(() => {
-  if (!status.value) return '可以开始新归档，或打开保存在本机的备份'
+  if (!status.value) return '可以开始新的临时归档'
   if (status.value.phase === 'ready') {
     return `归档包已准备好，共 ${status.value.saved.toLocaleString()} 条记录。${status.value.message}`
   }
@@ -130,12 +128,18 @@ watch(status, (current) => {
   if (current && current.phase !== 'awaitingLogin') entered.value = true
 }, { immediate: true })
 
+watch(() => status.value?.phase, (phase) => {
+  // A ready task opens its private manifest automatically, including after a page reload.
+  if (phase === 'ready') void openCurrentArchive()
+  else archiveManifest.value = null
+}, { immediate: true })
+
 watch(chapterIndex, (current) => {
   maxReachedChapter.value = Math.max(maxReachedChapter.value, current)
 }, { immediate: true })
 
 onMounted(() => {
-  // Looking for an existing cookie must not allocate a server task for local-only viewers.
+  // Looking for an existing cookie restores a task without creating a new one on the landing scene.
   void initialize(false)
   clockTimer = window.setInterval(() => (now.value = Date.now()), 30_000)
 })
@@ -147,6 +151,7 @@ onScopeDispose(() => {
 async function confirmDelete() {
   if (window.confirm('确认立即删除这个任务及服务器上的全部临时数据吗？')) {
     await deleteJob()
+    archiveManifest.value = null
   }
 }
 
@@ -156,42 +161,29 @@ async function enterArchiveFlow() {
 }
 
 async function openCurrentArchive() {
-  viewerBusy.value = true
+  if (archiveManifest.value || viewerLoading.value) return
+  viewerLoading.value = true
   error.value = ''
   try {
-    archiveSession.value = await openServerArchive()
+    archiveManifest.value = await fetchArchiveManifest()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '回忆册暂时无法打开'
   } finally {
-    viewerBusy.value = false
-  }
-}
-
-function chooseLocalArchive() {
-  archiveFileInput.value?.click()
-}
-
-async function openChosenArchive(event: Event) {
-  const input = event.currentTarget as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
-  viewerBusy.value = true
-  error.value = ''
-  try {
-    archiveSession.value = await openLocalArchive(file)
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '这个备份无法打开'
-  } finally {
-    viewerBusy.value = false
+    viewerLoading.value = false
   }
 }
 </script>
 
 <template>
-  <ArchiveViewer v-if="archiveSession" :session="archiveSession" @close="archiveSession = null" />
+  <ArchiveViewer
+    v-if="archiveManifest"
+    :manifest="archiveManifest"
+    :expires-label="ttl"
+    :busy="busy"
+    @delete="confirmDelete"
+  />
 
-  <div v-else class="app-stage" :class="`tone-${chapterTone}`" :data-current="chapterIndex" :aria-busy="busy || viewerBusy">
+  <div v-else class="app-stage" :class="`tone-${chapterTone}`" :data-current="chapterIndex" :aria-busy="busy || viewerLoading">
     <a class="skip-link" href="#archive-operation">跳到归档操作</a>
 
     <JiangnanStage :phase="scenePhase" :logged-in="status?.loggedIn ?? false" :progress="mediaPercent / 100" />
@@ -229,15 +221,6 @@ async function openChosenArchive(event: Event) {
         <button type="button" aria-label="关闭错误提示" @click="error = ''">关闭</button>
       </div>
 
-      <input
-        ref="archiveFileInput"
-        class="sr-only"
-        type="file"
-        accept=".zip,application/zip,application/x-zip-compressed"
-        aria-label="选择拾光册 ZIP 备份"
-        @change="openChosenArchive"
-      />
-
       <section v-if="!entered" class="chapter chapter--intro" aria-labelledby="intro-title">
         <p class="chapter-place"><span>00</span>门外</p>
         <h1 id="intro-title">雨还没停。</h1>
@@ -245,10 +228,7 @@ async function openChosenArchive(event: Event) {
         <button class="primary-action pressable" type="button" :disabled="busy" @click="enterArchiveFlow">
           {{ busy ? '正在开门' : '进去看看' }}
         </button>
-        <button class="local-archive-action pressable" type="button" :disabled="viewerBusy" @click="chooseLocalArchive">
-          {{ viewerBusy ? '正在打开备份' : '打开已有备份' }}
-        </button>
-        <p class="chapter-note">新归档只整理 QQ 仍能返回的内容；已有 ZIP 不会上传</p>
+        <p class="chapter-note">只整理 QQ 仍能返回的内容，完成后直接在这里查看</p>
       </section>
 
       <section v-else-if="!status" class="chapter chapter--loading" aria-label="正在准备归档任务">
@@ -257,23 +237,16 @@ async function openChosenArchive(event: Event) {
       </section>
 
       <section v-else-if="status.phase === 'ready'" class="chapter ready-card" aria-labelledby="ready-title">
-        <p class="chapter-place"><span>05</span>清晨</p><h1 id="ready-title">装好了。</h1>
+        <p class="chapter-place"><span>05</span>清晨</p><h1 id="ready-title">正在翻开。</h1>
         <p class="chapter-copy">{{ status.saved.toLocaleString() }} 条记录，{{ status.mediaDownloaded.toLocaleString() }} 个媒体文件。</p>
         <dl class="result-facts" aria-label="归档结果统计">
           <div><dt>记录</dt><dd>{{ status.saved.toLocaleString() }}</dd></div>
           <div><dt>媒体</dt><dd>{{ status.mediaDownloaded.toLocaleString() }}</dd></div>
           <div><dt>未取回</dt><dd>{{ status.mediaFailed.toLocaleString() }}</dd></div>
         </dl>
-        <div class="ready-actions">
-          <button class="primary-action pressable" type="button" :disabled="viewerBusy" @click="openCurrentArchive">
-            {{ viewerBusy ? '正在翻开' : '打开我的回忆册' }}
-          </button>
-          <a class="download-action pressable" href="/api/download">下载完整备份 ZIP</a>
-          <button class="local-archive-action pressable" type="button" :disabled="viewerBusy" @click="chooseLocalArchive">
-            打开其他 ZIP 备份
-          </button>
-        </div>
-        <p class="inline-status">现在可以直接浏览；ZIP 用于永久保存，也能以后回到本站本机打开。</p>
+        <button v-if="!viewerLoading" class="primary-action pressable" type="button" @click="openCurrentArchive">重新打开记录</button>
+        <a class="download-action pressable" href="/api/download">保存完整 ZIP 备份</a>
+        <p class="inline-status">页面会自动进入记录；ZIP 只用于长期备份。</p>
         <button class="text-action danger pressable" type="button" :disabled="busy" @click="confirmDelete">立即删除服务器临时文件</button>
       </section>
 

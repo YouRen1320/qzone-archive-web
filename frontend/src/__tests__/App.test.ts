@@ -6,10 +6,17 @@ import App from '../App.vue'
 import type { JobPhase, JobStatus } from '../types/job'
 
 const useArchiveJobMock = vi.hoisted(() => vi.fn())
+const archiveApiMock = vi.hoisted(() => ({
+  fetchArchiveManifest: vi.fn(),
+  fetchArchivePage: vi.fn(),
+  archiveMediaUrl: vi.fn((path: string) => `/api/archive/viewer/media/${path.replace('media/', '')}`),
+}))
 
 vi.mock('../composables/useArchiveJob', () => ({
   useArchiveJob: useArchiveJobMock,
 }))
+
+vi.mock('../services/archiveApi', () => archiveApiMock)
 
 const phases: JobPhase[] = [
   'awaitingLogin',
@@ -35,7 +42,7 @@ const phaseExpectations = [
   ['archiving', 'progress-card', /任务状态：archiving/, /安全停止/],
   ['downloadingMedia', 'progress-card', /任务状态：downloadingMedia/, /安全停止/],
   ['packaging', 'progress-card', /任务状态：packaging/, /安全停止/],
-  ['ready', 'ready-card', /24 条记录，4 个媒体文件/, /打开我的回忆册/],
+  ['ready', 'archive-reader', /那些日子还在/, /保存 ZIP/],
   ['paused', 'login-card', /归档停在这里/, /显示二维码/],
   ['cancelled', 'options-card', /这次已经安全停下/, /从已有断点继续/],
   ['failed', 'login-card', /这次没有走完/, /显示二维码/],
@@ -113,6 +120,19 @@ function findByText(wrapper: VueWrapper, selector: string, pattern: RegExp): DOM
 
 beforeEach(() => {
   useArchiveJobMock.mockReset()
+  archiveApiMock.fetchArchiveManifest.mockReset().mockResolvedValue({
+    formatVersion: 2,
+    generatedAt: 1_700_000_000,
+    complete: true,
+    records: 24,
+    mediaDownloaded: 4,
+    mediaFailed: 1,
+    source: 'QQ Zone mobile interaction feed',
+    notice: 'Only content returned by QQ at archive time can be included.',
+  })
+  archiveApiMock.fetchArchivePage.mockReset().mockResolvedValue({
+    items: [], total: 24, offset: 0, nextOffset: null, years: [2024],
+  })
   // App's clock is unrelated to these tests; replacing it prevents background timers from leaking between cases.
   vi.spyOn(window, 'setInterval').mockReturnValue(1 as unknown as ReturnType<typeof window.setInterval>)
 })
@@ -129,7 +149,8 @@ describe('complete task-state rendering', () => {
     const wrapper = await mountApp()
 
     expect(job.initialize).toHaveBeenCalledOnce()
-    expect(wrapper.get('main').text()).toContain('打开已有备份')
+    expect(wrapper.get('main').text()).not.toContain('打开已有备份')
+    expect(wrapper.get('main').text()).toContain('完成后直接在这里查看')
     expect(wrapper.get('main').text().trim()).not.toBe('')
   })
 
@@ -140,7 +161,7 @@ describe('complete task-state rendering', () => {
       const wrapper = await mountApp()
 
       expect(wrapper.find(`.${cardClass}`).exists()).toBe(true)
-      expect(wrapper.text()).toContain(`任务状态：${phase}`)
+      if (phase !== 'ready') expect(wrapper.text()).toContain(`任务状态：${phase}`)
       expect(wrapper.text()).toMatch(expectedCopy)
       expect(findByText(wrapper, 'button, a', expectedAction).text()).toMatch(expectedAction)
     },
@@ -157,7 +178,6 @@ describe('complete task-state rendering', () => {
     ['cancelled', false, '扫码'],
     ['failed', false, '扫码'],
     ['interrupted', false, '扫码'],
-    ['ready', false, '保存'],
   ] satisfies Array<[JobPhase, boolean, string]>)('%s maps to the expected workflow step', async (phase, loggedIn, stepLabel) => {
     installJobMock(makeStatus(phase, { loggedIn, maskedUin: loggedIn ? '12****34' : null }))
     const wrapper = await mountApp()
@@ -281,7 +301,17 @@ describe('progress, completion, and cleanup', () => {
     expect(job.cancelArchive).toHaveBeenCalledOnce()
   })
 
-  it('presents ready statistics and a direct local ZIP download', async () => {
+  it('opens ready records automatically and keeps ZIP as the secondary backup', async () => {
+    archiveApiMock.fetchArchiveManifest.mockResolvedValueOnce({
+      formatVersion: 2,
+      generatedAt: 1_700_000_000,
+      complete: true,
+      records: 1_234,
+      mediaDownloaded: 98,
+      mediaFailed: 7,
+      source: 'QQ Zone mobile interaction feed',
+      notice: 'Only content returned by QQ at archive time can be included.',
+    })
     installJobMock(makeStatus('ready', {
       message: '归档包已经准备好',
       saved: 1_234,
@@ -293,9 +323,9 @@ describe('progress, completion, and cleanup', () => {
 
     expect(wrapper.text()).toContain((1_234).toLocaleString())
     expect(wrapper.text()).toContain((98).toLocaleString())
-    expect(wrapper.text()).toContain((7).toLocaleString())
-    expect(wrapper.get('a[href="/api/download"]').text()).toContain('下载完整备份 ZIP')
-    expect(wrapper.get('[aria-current="step"]').text()).toContain('保存')
+    expect(archiveApiMock.fetchArchiveManifest).toHaveBeenCalledOnce()
+    expect(wrapper.get('a[href="/api/download"]').text()).toContain('保存 ZIP')
+    expect(wrapper.text()).not.toContain('打开已有备份')
   })
 
   it('dismisses a reported error through an explicitly named control', async () => {
@@ -314,7 +344,7 @@ describe('progress, completion, and cleanup', () => {
       .mockReturnValueOnce(false)
       .mockReturnValueOnce(true)
     const wrapper = await mountApp()
-    const deleteButton = findByText(wrapper, 'button', /立即删除服务器临时文件/)
+    const deleteButton = findByText(wrapper, 'button', /删除临时数据/)
 
     await deleteButton.trigger('click')
     expect(job.deleteJob).not.toHaveBeenCalled()
