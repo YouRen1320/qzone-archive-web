@@ -1,6 +1,6 @@
 export type ArchiveCategory = 'self' | 'other' | 'guestbook'
 
-// ArchiveRecord is the versioned, non-executable viewing contract shared by server and local ZIP sources.
+// ArchiveRecord is the versioned, non-executable contract returned from task-local SQLite.
 export interface ArchiveRecord {
   id: number
   cellId: string
@@ -24,18 +24,18 @@ export interface ArchiveManifest {
   mediaRoot?: string
 }
 
-export interface ArchiveMediaHandle {
-  url: string
-  size: number | null
-  release: () => void
+export interface ArchivePage {
+  items: ArchiveRecord[]
+  total: number
+  offset: number
+  nextOffset: number | null
+  years: number[]
 }
 
-export interface ArchiveSession {
-  kind: 'server' | 'local'
-  label: string
-  manifest: ArchiveManifest
-  records: ArchiveRecord[]
-  mediaSize: (path: string) => number | null
-  openMedia: (path: string) => Promise<ArchiveMediaHandle>
-  close: () => Promise<void>
+export interface ArchivePageQuery {
+  offset: number
+  limit: number
+  search: string
+  category: ArchiveCategory | ''
+  year: number | ''
 }

@@ -1,46 +1,70 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ArchiveMedia from './ArchiveMedia.vue'
-import type { ArchiveCategory, ArchiveRecord, ArchiveSession } from '../types/archive'
+import { fetchArchivePage } from '../services/archiveApi'
+import type { ArchiveCategory, ArchiveManifest, ArchiveRecord } from '../types/archive'
 
-const props = defineProps<{
-  session: ArchiveSession
-}>()
-const emit = defineEmits<{
-  close: []
-}>()
+const props = defineProps<{ manifest: ArchiveManifest; expiresLabel: string; busy?: boolean }>()
+const emit = defineEmits<{ delete: [] }>()
 
 const search = ref('')
 const category = ref<ArchiveCategory | ''>('')
 const year = ref<number | ''>('')
-const visibleCount = ref(24)
+const records = ref<ArchiveRecord[]>([])
+const years = ref<number[]>([])
+const total = ref(props.manifest.records)
+const nextOffset = ref<number | null>(0)
+const loading = ref(false)
+const loadError = ref('')
+let controller: AbortController | undefined
+let searchTimer: number | undefined
 
-const years = computed(() => Array.from(new Set(
-  props.session.records
-    .map((record) => new Date(record.publishedAt * 1000).getFullYear())
-    .filter((value) => Number.isFinite(value) && value > 1970),
-)).sort((left, right) => right - left))
+const hasMore = computed(() => nextOffset.value !== null)
 
-const filteredRecords = computed(() => {
-  const query = search.value.trim().toLocaleLowerCase('zh-CN')
-  return props.session.records.filter((record) => {
-    if (category.value && record.category !== category.value) return false
-    if (year.value && new Date(record.publishedAt * 1000).getFullYear() !== year.value) return false
-    if (!query) return true
-    return `${record.authorName || ''} ${record.content || ''}`.toLocaleLowerCase('zh-CN').includes(query)
-  })
+// Filters restart the immutable server-side page query; typing is debounced to avoid noisy requests.
+watch([search, category, year], () => {
+  if (searchTimer !== undefined) window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(() => void loadPage(true), 250)
 })
 
-const visibleRecords = computed(() => filteredRecords.value.slice(0, visibleCount.value))
-const hasMore = computed(() => visibleCount.value < filteredRecords.value.length)
-const sourceNote = computed(() => props.session.kind === 'local'
-  ? '这个 ZIP 只在当前浏览器里读取，没有上传。'
-  : '正在浏览本次临时任务，服务器仍会按原时间自动清理。')
+onMounted(() => void loadPage(true))
+onBeforeUnmount(() => {
+  controller?.abort()
+  if (searchTimer !== undefined) window.clearTimeout(searchTimer)
+})
 
-watch([search, category, year], () => (visibleCount.value = 24))
-
-// The session owns ZIP readers and object URLs; leaving the reader releases them together.
-onBeforeUnmount(() => void props.session.close())
+async function loadPage(reset = false) {
+  if (loading.value && !reset) return
+  if (reset) {
+    controller?.abort()
+    records.value = []
+    nextOffset.value = 0
+  }
+  if (nextOffset.value === null) return
+  const request = new AbortController()
+  controller = request
+  loading.value = true
+  loadError.value = ''
+  try {
+    const page = await fetchArchivePage({
+      offset: nextOffset.value,
+      limit: 30,
+      search: search.value.trim(),
+      category: category.value,
+      year: year.value,
+    }, request.signal)
+    if (request.signal.aborted) return
+    records.value = reset ? page.items : [...records.value, ...page.items]
+    total.value = page.total
+    nextOffset.value = page.nextOffset
+    years.value = page.years
+  } catch (reason) {
+    if (request.signal.aborted) return
+    loadError.value = reason instanceof Error ? reason.message : '这些记录暂时没有翻开'
+  } finally {
+    if (controller === request) loading.value = false
+  }
+}
 
 function categoryLabel(value: ArchiveCategory): string {
   return { self: '自己的动态', other: '好友动态', guestbook: '留言' }[value]
@@ -60,13 +84,13 @@ function formatDate(record: ArchiveRecord): { day: string; year: string; full: s
 <template>
   <div class="archive-reader">
     <header class="reader-header">
-      <button class="reader-brand pressable" type="button" aria-label="关闭回忆册" @click="emit('close')">
+      <div class="reader-brand">
         <span class="reader-brand__mark" aria-hidden="true"></span>
         <span><strong>拾光册</strong><small>我的回忆册</small></span>
-      </button>
+      </div>
       <div class="reader-header__actions">
-        <a v-if="session.kind === 'server'" class="reader-download pressable" href="/api/download">下载完整备份</a>
-        <button class="reader-close pressable" type="button" @click="emit('close')">返回</button>
+        <a class="reader-download pressable" href="/api/download">保存 ZIP</a>
+        <button class="reader-close pressable" type="button" :disabled="busy" @click="emit('delete')">删除临时数据</button>
       </div>
     </header>
 
@@ -80,13 +104,13 @@ function formatDate(record: ArchiveRecord): { day: string; year: string; full: s
         <div class="reader-cover__content">
           <p class="reader-kicker"><span>06</span>屋内</p>
           <h1 id="reader-title">原来，<br />那些日子还在。</h1>
-          <p>{{ session.label }}</p>
+          <p>你刚刚找回的记录，都在下面。</p>
           <dl class="reader-summary" aria-label="归档概览">
-            <div><dt>记录</dt><dd>{{ session.records.length.toLocaleString() }}</dd></div>
-            <div><dt>媒体</dt><dd>{{ session.manifest.mediaDownloaded.toLocaleString() }}</dd></div>
-            <div><dt>生成于</dt><dd>{{ new Date(session.manifest.generatedAt * 1000).toLocaleDateString('zh-CN') }}</dd></div>
+            <div><dt>记录</dt><dd>{{ manifest.records.toLocaleString() }}</dd></div>
+            <div><dt>媒体</dt><dd>{{ manifest.mediaDownloaded.toLocaleString() }}</dd></div>
+            <div><dt>生成于</dt><dd>{{ new Date(manifest.generatedAt * 1000).toLocaleDateString('zh-CN') }}</dd></div>
           </dl>
-          <p class="reader-privacy"><span aria-hidden="true"></span>{{ sourceNote }}</p>
+          <p class="reader-privacy"><span aria-hidden="true"></span>当前页直接读取本次临时归档，约 {{ expiresLabel }} 后自动清理。</p>
         </div>
       </section>
 
@@ -112,11 +136,11 @@ function formatDate(record: ArchiveRecord): { day: string; year: string; full: s
               <option value="guestbook">留言</option>
             </select>
           </label>
-          <p aria-live="polite">找到 {{ filteredRecords.length.toLocaleString() }} 条</p>
+          <p aria-live="polite">{{ loading && !records.length ? '正在翻开' : `找到 ${total.toLocaleString()} 条` }}</p>
         </div>
 
-        <div v-if="visibleRecords.length" class="reader-timeline">
-          <article v-for="record in visibleRecords" :key="`${record.id}-${record.cellId}`" class="memory-entry">
+        <div v-if="records.length" class="reader-timeline">
+          <article v-for="record in records" :key="`${record.id}-${record.cellId}`" class="memory-entry">
             <time :datetime="record.publishedAt ? new Date(record.publishedAt * 1000).toISOString() : undefined">
               <strong>{{ formatDate(record).day }}</strong>
               <span>{{ formatDate(record).year }}</span>
@@ -129,26 +153,31 @@ function formatDate(record: ArchiveRecord): { day: string; year: string; full: s
               </p>
               <p class="memory-entry__copy">{{ record.content || '这条记录没有留下文字。' }}</p>
               <div v-if="record.media.length" class="memory-entry__media" :data-count="Math.min(record.media.length, 4)">
-                <ArchiveMedia v-for="path in record.media" :key="path" :path="path" :session="session" />
+                <ArchiveMedia v-for="path in record.media" :key="path" :path="path" />
               </div>
             </div>
           </article>
         </div>
 
-        <div v-else class="reader-empty">
+        <div v-else-if="loadError" class="reader-empty" role="alert">
+          <p>{{ loadError }}</p>
+          <button type="button" class="text-action pressable" @click="loadPage(true)">再试一次</button>
+        </div>
+
+        <div v-else-if="!loading" class="reader-empty">
           <p>这一页没有找到记录。</p>
           <button type="button" class="text-action pressable" @click="search = ''; category = ''; year = ''">清空筛选</button>
         </div>
 
-        <button v-if="hasMore" class="reader-more pressable" type="button" @click="visibleCount += 24">
-          再往前翻 24 条
+        <button v-if="hasMore" class="reader-more pressable" type="button" :disabled="loading" @click="loadPage(false)">
+          {{ loading ? '正在翻页' : '再往前翻 30 条' }}
         </button>
       </section>
     </main>
 
     <footer class="reader-footer">
       <p>QQ 还能返回多少，归档中就保存多少。</p>
-      <button class="text-action pressable" type="button" @click="emit('close')">合上回忆册</button>
+      <a class="text-action pressable" href="/api/download">保存完整 ZIP 备份</a>
     </footer>
   </div>
 </template>
@@ -190,7 +219,6 @@ function formatDate(record: ArchiveRecord): { day: string; year: string; full: s
   color: inherit;
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
 
 .reader-brand__mark {
@@ -238,7 +266,7 @@ function formatDate(record: ArchiveRecord): { day: string; year: string; full: s
 
 .reader-cover {
   position: relative;
-  min-height: 100svh;
+  min-height: 76svh;
   overflow: hidden;
   background: #858985;
 }
@@ -346,7 +374,7 @@ function formatDate(record: ArchiveRecord): { day: string; year: string; full: s
 .reader-library {
   width: min(1080px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 84px 0 120px;
+  padding: 0 0 120px;
 }
 
 .reader-tools {
@@ -523,11 +551,11 @@ function formatDate(record: ArchiveRecord): { day: string; year: string; full: s
   }
 
   .reader-header__actions .reader-download {
-    display: none;
+    display: flex;
   }
 
   .reader-cover {
-    min-height: 92svh;
+    min-height: 82svh;
   }
 
   .reader-cover__veil {
@@ -562,7 +590,7 @@ function formatDate(record: ArchiveRecord): { day: string; year: string; full: s
 
   .reader-library {
     width: min(100% - 32px, 560px);
-    padding: 48px 0 90px;
+    padding: 0 0 90px;
   }
 
   .reader-tools {

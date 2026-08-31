@@ -15,6 +15,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --locked --release && \
     cp target/release/qzone-archive-web /tmp/qzone-archive-web
 
+FROM backend AS backend-quality
+RUN rustup component add rustfmt clippy
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/backend/target \
+    cargo fmt --check && \
+    cargo clippy --locked --all-targets -- -D warnings && \
+    cargo test --locked --all-targets
+
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/* && \
