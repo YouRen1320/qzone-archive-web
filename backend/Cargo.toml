@@ -1,6 +1,6 @@
 [package]
 name = "qzone-archive-web"
-version = "0.5.0"
+version = "0.5.1"
 description = "Privacy-first web interface for exporting authorized QQ Zone history"
 edition = "2021"
 license = "GPL-3.0-only"
