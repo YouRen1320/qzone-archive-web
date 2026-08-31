@@ -22,6 +22,8 @@ struct Manifest {
     media_failed: u64,
     source: &'static str,
     notice: &'static str,
+    records_file: &'static str,
+    media_root: &'static str,
 }
 
 pub async fn package(
@@ -52,7 +54,7 @@ fn package_blocking(job: &JobRuntime, owner_uin: &str, complete: bool) -> Result
         let records = database::export_records(&job.db_path(), owner_uin)?;
         let status = job.status_blocking();
         let manifest = Manifest {
-            format_version: 1,
+            format_version: 2,
             generated_at: crate::job::now(),
             complete,
             records: records.len(),
@@ -60,13 +62,22 @@ fn package_blocking(job: &JobRuntime, owner_uin: &str, complete: bool) -> Result
             media_failed: status.media_failed,
             source: "QQ Zone mobile interaction feed",
             notice: "Only content returned by QQ at archive time can be included.",
+            records_file: "records.json",
+            media_root: "media/",
         };
         write_json(&staging.join("manifest.json"), &manifest)?;
+        write_json(&staging.join("records.json"), &records)?;
         write_data_js(&staging.join("data.js"), &records)?;
         std::fs::write(staging.join("index.html"), OFFLINE_VIEWER)
             .map_err(|error| format!("写入离线查看器失败：{error}"))?;
         std::fs::write(staging.join("README.txt"), EXPORT_README)
             .map_err(|error| format!("写入导出说明失败：{error}"))?;
+
+        // The ready-state viewer streams these private copies without reopening SQLite or the ZIP.
+        std::fs::copy(staging.join("manifest.json"), job.viewer_manifest_path())
+            .map_err(|error| format!("准备在线查看清单失败：{error}"))?;
+        std::fs::copy(staging.join("records.json"), job.viewer_records_path())
+            .map_err(|error| format!("准备在线查看记录失败：{error}"))?;
 
         let target = job.download_path();
         let temporary = export_dir.join("qzone-archive.zip.part");
@@ -163,11 +174,12 @@ fn add_tree(
 
 const EXPORT_README: &str = r#"QQ 空间归档导出
 
-1. 双击 index.html 可离线浏览已经整理的动态。
-2. raw-feeds.jsonl 每一行是一条 QQ 接口返回的原始互动记录。
-3. archive.sqlite3 是本任务独立的 SQLite 数据库，适合二次开发或长期备份。
-4. media/ 保存本次成功下载的图片和视频；失败数量见 manifest.json。
-5. 本工具只能保存 QQ 在归档时仍然返回的内容，无法保证恢复永久删除的数据。
+1. 推荐访问 https://qzone.iyouren.top/ 并选择“打开已有备份”，ZIP 只在本机读取，不会上传。
+2. index.html 仍可作为电脑上的简易离线查看入口。
+3. records.json 是安全查看器使用的结构化记录；raw-feeds.jsonl 保存 QQ 接口返回的原始互动记录。
+4. archive.sqlite3 是本任务独立的 SQLite 数据库，适合二次开发或长期备份。
+5. media/ 保存本次成功下载的图片和视频；失败数量见 manifest.json。
+6. 本工具只能保存 QQ 在归档时仍然返回的内容，无法保证恢复永久删除的数据。
 
 隐私提示：导出包不包含 QQ 登录 Cookie。请像保护个人相册一样妥善保存本文件。
 
@@ -247,7 +259,12 @@ mod tests {
         let mut archive = zip::ZipArchive::new(file).unwrap();
         assert!(archive.by_name("index.html").is_ok());
         assert!(archive.by_name("data.js").is_ok());
+        assert!(archive.by_name("records.json").is_ok());
         assert!(archive.by_name("raw-feeds.jsonl").is_ok());
         assert!(archive.by_name("archive.sqlite3").is_ok());
+        let manifest: serde_json::Value =
+            serde_json::from_reader(archive.by_name("manifest.json").unwrap()).unwrap();
+        assert_eq!(manifest["formatVersion"], 2);
+        assert_eq!(manifest["recordsFile"], "records.json");
     }
 }

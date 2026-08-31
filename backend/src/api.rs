@@ -1,14 +1,14 @@
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, io::SeekFrom, path::PathBuf, sync::Arc};
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Path as AxumPath, State},
     http::{
         header::{
-            CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, ORIGIN,
-            X_CONTENT_TYPE_OPTIONS,
+            ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE,
+            CONTENT_TYPE, ORIGIN, RANGE, X_CONTENT_TYPE_OPTIONS,
         },
-        HeaderValue, Method, Request, StatusCode,
+        HeaderMap, HeaderValue, Method, Request, StatusCode,
     },
     middleware::{self, Next},
     response::{sse::Event, IntoResponse, Response, Sse},
@@ -17,6 +17,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use futures_util::{stream, Stream, StreamExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 use tokio_util::io::ReaderStream;
 use tower_http::{
@@ -49,6 +50,9 @@ pub fn router(manager: Arc<JobManager>) -> Router {
         .route("/login/poll", post(poll_qr_login))
         .route("/archive", post(start_archive))
         .route("/archive/cancel", post(cancel_archive))
+        .route("/archive/viewer/manifest", get(viewer_manifest))
+        .route("/archive/viewer/records", get(viewer_records))
+        .route("/archive/viewer/media/{*path}", get(viewer_media))
         .route("/events", get(events))
         .route("/download", get(download));
     let frontend = state.manager.config.frontend_dir.clone();
@@ -263,6 +267,183 @@ async fn download(State(state): State<AppState>, jar: CookieJar) -> Result<Respo
     Ok(response)
 }
 
+async fn viewer_manifest(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Response, AppError> {
+    let job = ready_job(&state, &jar).await?;
+    stream_private_file(
+        job.viewer_manifest_path(),
+        "application/json; charset=utf-8",
+        None,
+    )
+    .await
+}
+
+async fn viewer_records(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Response, AppError> {
+    let job = ready_job(&state, &jar).await?;
+    stream_private_file(
+        job.viewer_records_path(),
+        "application/json; charset=utf-8",
+        None,
+    )
+    .await
+}
+
+async fn viewer_media(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    AxumPath(path): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let job = ready_job(&state, &jar).await?;
+    if path.is_empty() || path.contains('\\') {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_media_path",
+            "媒体文件路径无效",
+        ));
+    }
+    let media_root = tokio::fs::canonicalize(job.media_dir())
+        .await
+        .map_err(|_| AppError::internal("媒体目录已经被清理"))?;
+    let requested = tokio::fs::canonicalize(job.media_dir().join(&path))
+        .await
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "media_not_found", "媒体文件不存在"))?;
+    if !requested.starts_with(&media_root) || !tokio::fs::metadata(&requested).await?.is_file() {
+        return Err(AppError::new(
+            StatusCode::NOT_FOUND,
+            "media_not_found",
+            "媒体文件不存在",
+        ));
+    }
+    let content_type = media_content_type(&requested);
+    stream_private_file(requested, content_type, headers.get(RANGE)).await
+}
+
+async fn ready_job(state: &AppState, jar: &CookieJar) -> Result<Arc<JobRuntime>, AppError> {
+    let job = authorized_job(state, jar).await?;
+    let status = job.status().await;
+    if status.phase != JobPhase::Ready || !status.download_ready {
+        return Err(AppError::conflict("viewer_not_ready", "回忆册尚未准备完成"));
+    }
+    Ok(job)
+}
+
+async fn stream_private_file(
+    path: PathBuf,
+    content_type: &'static str,
+    range: Option<&HeaderValue>,
+) -> Result<Response, AppError> {
+    let mut file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "file_not_found", "文件已经被清理"))?;
+    let size = file.metadata().await?.len();
+    let range = parse_byte_range(range.and_then(|value| value.to_str().ok()), size)?;
+    let (status, start, end) = match range {
+        Some((start, end)) => (StatusCode::PARTIAL_CONTENT, start, end),
+        None => (StatusCode::OK, 0, size.saturating_sub(1)),
+    };
+    let length = if size == 0 { 0 } else { end - start + 1 };
+    if start > 0 {
+        file.seek(SeekFrom::Start(start)).await?;
+    }
+    let stream = ReaderStream::new(file.take(length));
+    let mut response = Response::new(Body::from_stream(stream));
+    *response.status_mut() = status;
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
+        .headers_mut()
+        .insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    response.headers_mut().insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&length.to_string())
+            .map_err(|_| AppError::internal("文件大小无效"))?,
+    );
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store, max-age=0"),
+    );
+    if status == StatusCode::PARTIAL_CONTENT {
+        response.headers_mut().insert(
+            CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes {start}-{end}/{size}"))
+                .map_err(|_| AppError::internal("媒体范围无效"))?,
+        );
+    }
+    Ok(response)
+}
+
+fn parse_byte_range(value: Option<&str>, size: u64) -> Result<Option<(u64, u64)>, AppError> {
+    let Some(value) = value else { return Ok(None) };
+    let Some(specification) = value.strip_prefix("bytes=") else {
+        return Err(invalid_range());
+    };
+    if size == 0 || specification.contains(',') {
+        return Err(invalid_range());
+    }
+    let Some((start, end)) = specification.split_once('-') else {
+        return Err(invalid_range());
+    };
+    let range = if start.is_empty() {
+        let suffix = end.parse::<u64>().map_err(|_| invalid_range())?.min(size);
+        if suffix == 0 {
+            return Err(invalid_range());
+        }
+        (size - suffix, size - 1)
+    } else {
+        let start = start.parse::<u64>().map_err(|_| invalid_range())?;
+        if start >= size {
+            return Err(invalid_range());
+        }
+        let end = if end.is_empty() {
+            size - 1
+        } else {
+            end.parse::<u64>()
+                .map_err(|_| invalid_range())?
+                .min(size - 1)
+        };
+        if end < start {
+            return Err(invalid_range());
+        }
+        (start, end)
+    };
+    Ok(Some(range))
+}
+
+fn invalid_range() -> AppError {
+    AppError::new(
+        StatusCode::RANGE_NOT_SATISFIABLE,
+        "invalid_range",
+        "请求的媒体范围无效",
+    )
+}
+
+fn media_content_type(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        _ => "application/octet-stream",
+    }
+}
+
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
@@ -359,7 +540,7 @@ async fn security_middleware(
     );
     response.headers_mut().insert(
         "content-security-policy",
-        HeaderValue::from_static("default-src 'self'; base-uri 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; media-src 'self' blob:; object-src 'none'; script-src 'self'; style-src 'self'"),
+        HeaderValue::from_static("default-src 'self'; base-uri 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self'"),
     );
     if is_api && !response.headers().contains_key(CACHE_CONTROL) {
         response.headers_mut().insert(
@@ -373,7 +554,7 @@ async fn security_middleware(
 #[cfg(test)]
 mod tests {
     use axum::{
-        body::Body,
+        body::{to_bytes, Body},
         http::{Request, StatusCode},
     };
     use tempfile::tempdir;
@@ -474,5 +655,93 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::CONFLICT);
         }
+    }
+
+    #[test]
+    fn byte_ranges_cover_video_seeking_shapes() {
+        assert_eq!(super::parse_byte_range(None, 10).unwrap(), None);
+        assert_eq!(
+            super::parse_byte_range(Some("bytes=2-5"), 10).unwrap(),
+            Some((2, 5))
+        );
+        assert_eq!(
+            super::parse_byte_range(Some("bytes=7-"), 10).unwrap(),
+            Some((7, 9))
+        );
+        assert_eq!(
+            super::parse_byte_range(Some("bytes=-3"), 10).unwrap(),
+            Some((7, 9))
+        );
+        assert_eq!(
+            super::parse_byte_range(Some("bytes=12-15"), 10)
+                .unwrap_err()
+                .status,
+            StatusCode::RANGE_NOT_SATISFIABLE
+        );
+    }
+
+    #[tokio::test]
+    async fn ready_viewer_is_owner_only_and_supports_media_ranges() {
+        let directory = tempdir().unwrap();
+        let public = directory.path().join("public");
+        std::fs::create_dir_all(&public).unwrap();
+        std::fs::write(public.join("index.html"), "ok").unwrap();
+        let manager = JobManager::new(Config::development(directory.path().join("jobs"), public))
+            .await
+            .unwrap();
+        let (job, owner) = manager.create().await.unwrap();
+        std::fs::create_dir_all(job.media_dir()).unwrap();
+        std::fs::write(job.viewer_manifest_path(), r#"{"formatVersion":2}"#).unwrap();
+        std::fs::write(job.viewer_records_path(), "[]").unwrap();
+        std::fs::write(job.media_dir().join("clip.mp4"), b"0123456789").unwrap();
+        job.update(|status| {
+            status.phase = JobPhase::Ready;
+            status.download_ready = true;
+        })
+        .await
+        .unwrap();
+        let cookie = format!("qzone_job={}; qzone_owner={owner}", job.id);
+        let app = router(manager);
+
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::get("/api/archive/viewer/manifest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+        let manifest = app
+            .clone()
+            .oneshot(
+                Request::get("/api/archive/viewer/manifest")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(manifest.status(), StatusCode::OK);
+        assert_eq!(
+            manifest.headers()["cache-control"],
+            "private, no-store, max-age=0"
+        );
+
+        let media = app
+            .oneshot(
+                Request::get("/api/archive/viewer/media/clip.mp4")
+                    .header("cookie", &cookie)
+                    .header("range", "bytes=2-5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(media.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(media.headers()["content-range"], "bytes 2-5/10");
+        assert_eq!(to_bytes(media.into_body(), 16).await.unwrap(), &b"2345"[..]);
     }
 }

@@ -21,7 +21,7 @@ Recommended `.env` for the initial 2 GiB host:
 
 ```dotenv
 QZONE_IMAGE=qzone-archive-web
-QZONE_IMAGE_TAG=v0.3.0
+QZONE_IMAGE_TAG=v0.4.0
 QZONE_BIND=0.0.0.0:8091
 QZONE_DATA_DIR=/data/jobs
 QZONE_PUBLIC_ORIGIN=https://qzone.iyouren.top
@@ -42,7 +42,7 @@ Do not put QQ cookies or user credentials in this file.
 The canonical anonymous deployment path is the checksum-protected image archive attached to the public GitHub Release. Download and verify the exact tag before loading it:
 
 ```bash
-release=v0.3.0
+release=v0.4.0
 base_url="https://github.com/YouRen1320/qzone-archive-web/releases/download/${release}"
 curl --fail --location --remote-name "${base_url}/qzone-archive-web-${release}-linux-amd64.tar.gz"
 curl --fail --location --remote-name "${base_url}/SHA256SUMS"
@@ -78,10 +78,11 @@ Run these checks before inviting users:
 3. A second browser cannot access the first task, even if it knows only the job ID.
 4. A QR login never creates files containing `p_skey`, `skey`, or full Cookie headers.
 5. One-page real-account smoke test succeeds from the server IP without QQ rate limiting.
-6. Desktop, iOS, and Android browsers can download and open the ZIP.
-7. The ZIP contains the viewer, JSONL, SQLite, manifest, and expected media, but no cookies.
-8. Explicit deletion and TTL cleanup remove the complete task directory.
-9. The existing sites on the host still return their previous content.
+6. The ready page can open the generated archive immediately and seek through video media.
+7. Desktop, iOS, and Android browsers can select a saved ZIP and browse it without uploading it.
+8. The ZIP contains records JSON, the compatibility viewer, JSONL, SQLite, manifest, and expected media, but no cookies.
+9. Explicit deletion and TTL cleanup remove the complete task directory.
+10. The existing sites on the host still return their previous content.
 
 ## Updates
 
