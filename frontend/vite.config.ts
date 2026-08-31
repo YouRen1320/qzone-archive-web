@@ -7,6 +7,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': 'http://127.0.0.1:8091',
+      // Local visual QA can switch mock phases without exposing the endpoint in production builds.
+      '/mock-phase': 'http://127.0.0.1:8091',
     },
   },
   test: {

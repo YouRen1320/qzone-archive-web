@@ -29,17 +29,17 @@ const activePhases: JobPhase[] = ['queued', 'archiving', 'downloadingMedia', 'pa
 const mountedWrappers: VueWrapper[] = []
 
 const phaseExpectations = [
-  ['awaitingLogin', 'login-card', /用手机 QQ 扫码确认/, /生成一次性登录二维码/],
-  ['loggedIn', 'login-card', /已登录 12\*{4}34/, /开始临时归档/],
+  ['awaitingLogin', 'login-card', /用手机 QQ 扫一下/, /显示二维码/],
+  ['loggedIn', 'options-card', /这次带走什么/, /开始整理/],
   ['queued', 'progress-card', /任务状态：queued/, /安全停止/],
   ['archiving', 'progress-card', /任务状态：archiving/, /安全停止/],
   ['downloadingMedia', 'progress-card', /任务状态：downloadingMedia/, /安全停止/],
   ['packaging', 'progress-card', /任务状态：packaging/, /安全停止/],
-  ['ready', 'ready-card', /24 条记录，等你带走/, /下载 ZIP 到本机/],
-  ['paused', 'login-card', /归档已暂停/, /生成一次性登录二维码/],
-  ['cancelled', 'login-card', /归档已安全停止/, /从已有断点继续/],
-  ['failed', 'login-card', /这次归档没有完成/, /生成一次性登录二维码/],
-  ['interrupted', 'login-card', /服务器恢复后等待继续/, /生成一次性登录二维码/],
+  ['ready', 'ready-card', /24 条记录，4 个媒体文件/, /保存到这台设备/],
+  ['paused', 'login-card', /归档停在这里/, /显示二维码/],
+  ['cancelled', 'options-card', /这次已经安全停下/, /从已有断点继续/],
+  ['failed', 'login-card', /这次没有走完/, /显示二维码/],
+  ['interrupted', 'login-card', /服务器回来，登录已经失效/, /显示二维码/],
 ] satisfies Array<[JobPhase, string, RegExp, RegExp]>
 
 // Each phase fixture deliberately contains only public progress fields, mirroring the API contract.
@@ -96,6 +96,11 @@ async function mountApp() {
   const wrapper = mount(App, { attachTo: host })
   mountedWrappers.push(wrapper)
   await flushPromises()
+  const entrance = wrapper.find('.chapter--intro button')
+  if (entrance.exists() && !(entrance.element as HTMLButtonElement).disabled) {
+    await entrance.trigger('click')
+    await nextTick()
+  }
   return wrapper
 }
 
@@ -141,17 +146,17 @@ describe('complete task-state rendering', () => {
   )
 
   it.each([
-    ['awaitingLogin', false, '安全登录'],
-    ['loggedIn', true, '临时归档'],
-    ['queued', true, '临时归档'],
-    ['archiving', true, '临时归档'],
-    ['downloadingMedia', true, '临时归档'],
-    ['packaging', true, '临时归档'],
-    ['paused', false, '临时归档'],
-    ['cancelled', false, '临时归档'],
-    ['failed', false, '临时归档'],
-    ['interrupted', false, '临时归档'],
-    ['ready', false, '下载并清理'],
+    ['awaitingLogin', false, '扫码'],
+    ['loggedIn', true, '选择'],
+    ['queued', true, '整理'],
+    ['archiving', true, '整理'],
+    ['downloadingMedia', true, '装包'],
+    ['packaging', true, '装包'],
+    ['paused', false, '扫码'],
+    ['cancelled', false, '扫码'],
+    ['failed', false, '扫码'],
+    ['interrupted', false, '扫码'],
+    ['ready', false, '保存'],
   ] satisfies Array<[JobPhase, boolean, string]>)('%s maps to the expected workflow step', async (phase, loggedIn, stepLabel) => {
     installJobMock(makeStatus(phase, { loggedIn, maskedUin: loggedIn ? '12****34' : null }))
     const wrapper = await mountApp()
@@ -162,10 +167,10 @@ describe('complete task-state rendering', () => {
   })
 
   it.each([
-    ['paused', false, '归档已暂停', '已保存的断点仍在'],
-    ['cancelled', true, '归档已安全停止', '已完成的分页仍保留'],
-    ['failed', true, '这次归档没有完成', '重新扫码验证后再继续'],
-    ['interrupted', false, '服务器恢复后等待继续', '原登录会话已失效'],
+    ['paused', false, '归档停在这里', '已经落盘的分页还在'],
+    ['cancelled', true, '这次已经安全停下', '已经整理好的分页还在'],
+    ['failed', true, '这次没有走完', '重新扫一下验证 QQ'],
+    ['interrupted', false, '服务器回来，登录已经失效', '重新扫码后，可以从已经保存的位置继续'],
   ] satisfies Array<[JobPhase, boolean, string, string]>)(
     'keeps unique recovery guidance for %s',
     async (phase, loggedIn, title, guidance) => {
@@ -176,7 +181,7 @@ describe('complete task-state rendering', () => {
       expect(wrapper.text()).toContain(message)
       expect(wrapper.text()).toContain(title)
       expect(wrapper.text()).toContain(guidance)
-      expect(wrapper.get('[aria-current="step"]').text()).toContain('临时归档')
+      expect(wrapper.get('[aria-current="step"]').text()).toMatch(/扫码|选择/)
     },
   )
 
@@ -195,10 +200,10 @@ describe('complete task-state rendering', () => {
     const job = installJobMock(makeStatus('failed', { loggedIn: true, maskedUin: '12****34' }))
     const wrapper = await mountApp()
 
-    expect(wrapper.text()).toContain('重新扫码，继续已有断点')
+    expect(wrapper.text()).toContain('重新扫一下，断点还在')
     expect(wrapper.text()).not.toContain('已验证')
-    expect(wrapper.find('.options').exists()).toBe(false)
-    await findByText(wrapper, 'button', /生成一次性登录二维码/).trigger('click')
+    expect(wrapper.find('.options-card').exists()).toBe(false)
+    await findByText(wrapper, 'button', /显示二维码/).trigger('click')
     expect(job.requestQr).toHaveBeenCalledOnce()
     expect(job.startArchive).not.toHaveBeenCalled()
   })
@@ -209,8 +214,8 @@ describe('complete task-state rendering', () => {
       const job = installJobMock(makeStatus(phase, { loggedIn: false, maskedUin: null }))
       const wrapper = await mountApp()
 
-      expect(wrapper.text()).toContain('重新扫码，继续已有断点')
-      await findByText(wrapper, 'button', /生成一次性登录二维码/).trigger('click')
+      expect(wrapper.text()).toContain('重新扫一下，断点还在')
+      await findByText(wrapper, 'button', /显示二维码/).trigger('click')
       expect(job.requestQr).toHaveBeenCalledOnce()
     },
   )
@@ -221,7 +226,7 @@ describe('login and archive controls', () => {
     const job = installJobMock(makeStatus('awaitingLogin'))
     let wrapper = await mountApp()
 
-    await findByText(wrapper, 'button', /生成.*二维码/).trigger('click')
+    await findByText(wrapper, 'button', /显示二维码/).trigger('click')
     expect(job.requestQr).toHaveBeenCalledOnce()
 
     wrapper.unmount()
@@ -233,7 +238,7 @@ describe('login and archive controls', () => {
 
     expect(wrapper.get('img[alt*="QQ"][alt*="二维码"]').attributes('src')).toContain('data:image/png')
     expect(wrapper.get('a[download]').attributes('href')).toContain('data:image/png')
-    await findByText(wrapper, 'button', /刷新.*二维码/).trigger('click')
+    await findByText(wrapper, 'button', /换一张二维码/).trigger('click')
     expect(qrJob.requestQr).toHaveBeenCalledOnce()
   })
 
@@ -249,7 +254,7 @@ describe('login and archive controls', () => {
 
     await media.setValue(false)
     await pacing.setValue('8000')
-    await findByText(wrapper, 'button', /开始.*归档/).trigger('click')
+    await findByText(wrapper, 'button', /开始整理/).trigger('click')
 
     expect(job.startArchive).toHaveBeenCalledWith(false, 8_000)
   })
@@ -288,8 +293,8 @@ describe('progress, completion, and cleanup', () => {
     expect(wrapper.text()).toContain((1_234).toLocaleString())
     expect(wrapper.text()).toContain((98).toLocaleString())
     expect(wrapper.text()).toContain((7).toLocaleString())
-    expect(wrapper.get('a[href="/api/download"]').text()).toMatch(/下载.*ZIP|ZIP.*下载/)
-    expect(wrapper.get('[aria-current="step"]').text()).toContain('下载并清理')
+    expect(wrapper.get('a[href="/api/download"]').text()).toContain('保存到这台设备')
+    expect(wrapper.get('[aria-current="step"]').text()).toContain('保存')
   })
 
   it('dismisses a reported error through an explicitly named control', async () => {
@@ -308,7 +313,7 @@ describe('progress, completion, and cleanup', () => {
       .mockReturnValueOnce(false)
       .mockReturnValueOnce(true)
     const wrapper = await mountApp()
-    const deleteButton = findByText(wrapper, 'button', /现在就删除服务器临时文件/)
+    const deleteButton = findByText(wrapper, 'button', /立即删除服务器临时文件/)
 
     await deleteButton.trigger('click')
     expect(job.deleteJob).not.toHaveBeenCalled()
