@@ -9,8 +9,12 @@ pub struct Config {
     pub frontend_dir: PathBuf,
     pub public_origin: String,
     pub secure_cookies: bool,
+    pub idle_job_ttl: Duration,
     pub job_ttl: Duration,
+    pub ready_job_ttl: Duration,
     pub post_download_ttl: Duration,
+    pub no_progress_timeout: Duration,
+    pub max_run_duration: Duration,
     pub max_jobs: usize,
     pub max_active_archives: usize,
     pub max_job_bytes: u64,
@@ -43,11 +47,18 @@ impl Config {
             ),
             public_origin,
             secure_cookies: parse_bool("QZONE_SECURE_COOKIES", true)?,
+            idle_job_ttl: Duration::from_secs(parse_u64("QZONE_IDLE_JOB_TTL_SECONDS", 1_200)?),
             job_ttl: Duration::from_secs(parse_u64("QZONE_JOB_TTL_SECONDS", 21_600)?),
+            ready_job_ttl: Duration::from_secs(parse_u64("QZONE_READY_JOB_TTL_SECONDS", 7_200)?),
             post_download_ttl: Duration::from_secs(parse_u64(
                 "QZONE_POST_DOWNLOAD_TTL_SECONDS",
                 600,
             )?),
+            no_progress_timeout: Duration::from_secs(parse_u64(
+                "QZONE_NO_PROGRESS_TIMEOUT_SECONDS",
+                300,
+            )?),
+            max_run_duration: Duration::from_secs(parse_u64("QZONE_MAX_RUN_SECONDS", 3_600)?),
             max_jobs: parse_usize("QZONE_MAX_JOBS", 8)?,
             max_active_archives: parse_usize("QZONE_MAX_ACTIVE_ARCHIVES", 1)?,
             max_job_bytes: parse_u64("QZONE_MAX_JOB_BYTES", 5 * 1024 * 1024 * 1024)?,
@@ -65,8 +76,12 @@ impl Config {
             frontend_dir,
             public_origin: "http://localhost".into(),
             secure_cookies: false,
+            idle_job_ttl: Duration::from_secs(60),
             job_ttl: Duration::from_secs(3_600),
+            ready_job_ttl: Duration::from_secs(120),
             post_download_ttl: Duration::from_secs(60),
+            no_progress_timeout: Duration::from_secs(5),
+            max_run_duration: Duration::from_secs(60),
             max_jobs: 8,
             max_active_archives: 1,
             max_job_bytes: 512 * 1024 * 1024,
@@ -90,12 +105,38 @@ impl Config {
                 "QZONE_JOB_TTL_SECONDS 不能少于 600 秒",
             ));
         }
-        if self.post_download_ttl > self.job_ttl {
+        if self.idle_job_ttl < Duration::from_secs(300) {
             return Err(AppError::configuration(
-                "下载后保留时间不能超过任务总有效期",
+                "QZONE_IDLE_JOB_TTL_SECONDS 不能少于 300 秒",
+            ));
+        }
+        if self.ready_job_ttl < Duration::from_secs(600) {
+            return Err(AppError::configuration(
+                "QZONE_READY_JOB_TTL_SECONDS 不能少于 600 秒",
+            ));
+        }
+        if self.max_run_duration < Duration::from_secs(600) {
+            return Err(AppError::configuration(
+                "QZONE_MAX_RUN_SECONDS 不能少于 600 秒",
+            ));
+        }
+        if self.no_progress_timeout < Duration::from_secs(60)
+            || self.no_progress_timeout > self.max_run_duration
+        {
+            return Err(AppError::configuration(
+                "QZONE_NO_PROGRESS_TIMEOUT_SECONDS 必须处于 60 秒到单次运行上限之间",
+            ));
+        }
+        if self.post_download_ttl > self.ready_job_ttl {
+            return Err(AppError::configuration(
+                "下载后保留时间不能超过完成后保留时间",
             ));
         }
         Ok(())
+    }
+
+    pub fn owner_cookie_ttl(&self) -> Duration {
+        self.job_ttl + self.max_run_duration + self.ready_job_ttl
     }
 }
 

@@ -43,7 +43,7 @@ const phaseExpectations = [
   ['downloadingMedia', 'progress-card', /任务状态：downloadingMedia/, /安全停止/],
   ['packaging', 'progress-card', /任务状态：packaging/, /安全停止/],
   ['ready', 'archive-reader', /那些日子还在/, /保存 ZIP/],
-  ['paused', 'login-card', /归档停在这里/, /显示二维码/],
+  ['paused', 'login-card', /已经自动停好/, /显示二维码/],
   ['cancelled', 'options-card', /这次已经安全停下/, /从已有断点继续/],
   ['failed', 'login-card', /这次没有走完/, /显示二维码/],
   ['interrupted', 'login-card', /服务器回来，登录已经失效/, /显示二维码/],
@@ -58,6 +58,10 @@ function makeStatus(phase: JobPhase, overrides: Partial<JobStatus> = {}): JobSta
     message: `任务状态：${phase}`,
     createdAt: 1_700_000_000,
     expiresAt: Math.floor(Date.now() / 1_000) + 21_600,
+    lastActivityAt: 1_700_000_000,
+    runStartedAt: activePhases.includes(phase) ? 1_700_000_100 : null,
+    lastProgressAt: activePhases.includes(phase) ? 1_700_000_200 : null,
+    queuedAhead: phase === 'queued' ? 2 : 0,
     loggedIn,
     maskedUin: loggedIn ? '12****34' : null,
     pages: 3,
@@ -188,7 +192,7 @@ describe('complete task-state rendering', () => {
   })
 
   it.each([
-    ['paused', false, '归档停在这里', '已经落盘的分页还在'],
+    ['paused', false, '已经自动停好', '位置已经让给下一位'],
     ['cancelled', true, '这次已经安全停下', '已经整理好的分页还在'],
     ['failed', true, '这次没有走完', '重新扫一下验证 QQ'],
     ['interrupted', false, '服务器回来，登录已经失效', '重新扫码后，可以从已经保存的位置继续'],
@@ -205,6 +209,14 @@ describe('complete task-state rendering', () => {
       expect(wrapper.get('[aria-current="step"]').text()).toMatch(/扫码|选择/)
     },
   )
+
+  it('shows the live queue position without asking the user to keep the page open', async () => {
+    installJobMock(makeStatus('queued', { queuedAhead: 3 }))
+    const wrapper = await mountApp()
+
+    expect(wrapper.text()).toContain('前面还有 3 个任务')
+    expect(wrapper.text()).toContain('不必一直开着页面')
+  })
 
   it('continues a logged-in cancelled task with the newly selected archive arguments', async () => {
     const job = installJobMock(makeStatus('cancelled', { loggedIn: true, maskedUin: '12****34' }))

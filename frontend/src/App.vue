@@ -80,7 +80,7 @@ const progressValue = computed(() =>
 )
 const progressLabel = computed(() => {
   switch (status.value?.phase) {
-    case 'queued': return '等船开'
+    case 'queued': return '排队中'
     case 'archiving': return '读记录'
     case 'downloadingMedia': return '取媒体'
     case 'packaging': return '装归档'
@@ -89,7 +89,9 @@ const progressLabel = computed(() => {
 })
 const activeTitle = computed(() => {
   switch (status.value?.phase) {
-    case 'queued': return '船还没开，先等一会。'
+    case 'queued': return status.value.queuedAhead > 0
+      ? `前面还有 ${status.value.queuedAhead} 个任务。`
+      : '正在为你腾出位置。'
     case 'archiving': return `第 ${status.value.pages.toLocaleString()} 页，正在回来。`
     case 'downloadingMedia': return '照片和视频，正在跟上。'
     case 'packaging': return '正在装好。'
@@ -101,7 +103,7 @@ const activeTitle = computed(() => {
 const recoveryNotice = computed(() => {
   switch (status.value?.phase) {
     case 'paused':
-      return { title: '归档停在这里。', guidance: '已经落盘的分页还在，确认选项后可以从断点继续。' }
+      return { title: '已经自动停好。', guidance: '位置已经让给下一位；重新扫码后，可以从保存好的断点继续。' }
     case 'cancelled':
       return { title: '这次已经安全停下。', guidance: '已经整理好的分页还在，再次开始会优先使用断点。' }
     case 'failed':
@@ -265,7 +267,7 @@ async function openCurrentArchive() {
         </dl>
         <MemoryGallery v-if="chapterIndex === 4" />
         <button class="text-action danger pressable" type="button" :disabled="busy" @click="cancelArchive">安全停止</button>
-        <p class="inline-status">保持页面打开。已经写入临时 SQLite 的分页不会因短暂断线丢失。</p>
+        <p class="inline-status">{{ status.phase === 'queued' ? '轮到后会自动开始，不必一直开着页面。' : '可以离开页面；已经写入的分页不会因短暂断线丢失。' }}</p>
       </section>
 
       <section v-else-if="needsLogin" class="chapter login-card" aria-labelledby="login-title">
