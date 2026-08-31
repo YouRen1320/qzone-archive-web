@@ -32,13 +32,13 @@ QZONE_DATA_DIR/
 1. The browser creates or resumes its isolated job.
 2. The backend obtains a QQ QR code and keeps the QQ cookie jar in memory.
 3. After login confirmation, the user starts an archive with an optional media-download choice.
-4. A global semaphore permits one active archive on the initial 2 GiB server; additional authenticated jobs wait in FIFO order.
+4. A FIFO queue and global semaphore permit one active archive on the initial 2 GiB server; each waiting job receives a live `queuedAhead` count.
 5. Each page is committed transactionally to the task-local SQLite database, together with a resumable cursor.
 6. The service optionally downloads bounded media, then writes JSON, HTML, a manifest, and the SQLite database into a ZIP.
 7. Packaging freezes the final owner-filtered records into `archive_viewer_records` inside that task's SQLite database.
 8. The ready page opens automatically and requests private record pages from SQLite; media is assigned near the viewport and supports byte ranges for video seeking.
 9. The user may also download the complete ZIP as a portable backup. The compatibility HTML inside the ZIP remains available for desktop use, but the live site does not import ZIP files.
-10. The task is deleted after the configured post-download delay or the absolute TTL, whichever comes first.
+10. Idle pre-start jobs, queued jobs, completed/paused jobs, and downloaded jobs each have explicit retention windows; the earliest applicable deadline deletes the complete isolated directory.
 
 ## Presentation state
 
@@ -51,11 +51,13 @@ The Jiangnan stage is progressive enhancement. Static desktop and mobile images 
 - A process restart deliberately destroys all QQ cookies and active login sessions.
 - Existing job directories are scanned at startup. Interrupted jobs become resumable after the user scans a new QR code.
 - SQLite transactions protect completed pages. A checkpoint is advanced only after its page commit succeeds.
+- A running archive that makes no progress for five minutes or reaches its one-hour execution budget is cooperatively paused. Its QQ login is cleared, its slot is released, and its task-local SQLite remains available for a rescan-and-resume flow.
 - Expired and malformed job directories are removed without loading their contents into another session.
 
 ## Capacity guardrails
 
 - One running archive; a small bounded queue.
+- Pre-start inactivity, queue waiting, single-run duration, completed-data retention, and post-download retention are configured independently.
 - Per-job and global disk quotas are checked before work and media writes.
 - Page requests have bounded retries and a configurable delay of at least two seconds.
 - Individual images and videos have size limits and download timeouts.

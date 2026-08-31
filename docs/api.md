@@ -31,4 +31,6 @@ Errors use a stable envelope:
 
 Viewer endpoints require both owner cookies and a ready job. Record pages are capped at 60 items and read only the frozen viewer projection in that job's SQLite. Media paths are canonicalized inside the job directory, and responses are private, `no-store`, and range-capable for video seeking.
 
+Job status responses and SSE events expose non-sensitive lifecycle metadata: `queuedAhead`, `lastActivityAt`, `runStartedAt`, and `lastProgressAt`. These values drive queue and timeout messaging only; they never contain QQ credentials or recovered content.
+
 The API never includes QQ cookies, raw upstream responses containing credentials, absolute server paths, or stack traces.

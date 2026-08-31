@@ -18,6 +18,10 @@ export interface JobStatus {
   message: string
   createdAt: number
   expiresAt: number
+  lastActivityAt: number
+  runStartedAt: number | null
+  lastProgressAt: number | null
+  queuedAhead: number
   loggedIn: boolean
   maskedUin: string | null
   pages: number

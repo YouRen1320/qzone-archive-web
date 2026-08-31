@@ -6,6 +6,7 @@ use std::{
 };
 
 use serde::Serialize;
+use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
@@ -30,13 +31,19 @@ pub async fn package(
     job: Arc<JobRuntime>,
     owner_uin: String,
     complete: bool,
+    cancellation: CancellationToken,
 ) -> Result<PathBuf, String> {
-    tokio::task::spawn_blocking(move || package_blocking(&job, &owner_uin, complete))
+    tokio::task::spawn_blocking(move || package_blocking(&job, &owner_uin, complete, &cancellation))
         .await
         .map_err(|_| "导出任务意外停止".to_owned())?
 }
 
-fn package_blocking(job: &JobRuntime, owner_uin: &str, complete: bool) -> Result<PathBuf, String> {
+fn package_blocking(
+    job: &JobRuntime,
+    owner_uin: &str,
+    complete: bool,
+    cancellation: &CancellationToken,
+) -> Result<PathBuf, String> {
     let export_dir = job.export_dir();
     let staging = export_dir.join("staging");
     if staging.exists() {
@@ -46,7 +53,9 @@ fn package_blocking(job: &JobRuntime, owner_uin: &str, complete: bool) -> Result
     std::fs::create_dir_all(&staging).map_err(|error| format!("创建导出暂存区失败：{error}"))?;
 
     let result = (|| {
+        ensure_export_active(cancellation)?;
         let records = database::export_records(&job.db_path(), owner_uin)?;
+        ensure_export_active(cancellation)?;
         database::replace_viewer_records(&job.db_path(), &records)?;
         database::checkpoint_database(&job.db_path())?;
         let database_copy = staging.join("archive.sqlite3");
@@ -66,9 +75,9 @@ fn package_blocking(job: &JobRuntime, owner_uin: &str, complete: bool) -> Result
             records_file: "records.json",
             media_root: "media/",
         };
-        write_json(&staging.join("manifest.json"), &manifest)?;
-        write_json(&staging.join("records.json"), &records)?;
-        write_data_js(&staging.join("data.js"), &records)?;
+        write_json(&staging.join("manifest.json"), &manifest, cancellation)?;
+        write_json(&staging.join("records.json"), &records, cancellation)?;
+        write_data_js(&staging.join("data.js"), &records, cancellation)?;
         std::fs::write(staging.join("index.html"), OFFLINE_VIEWER)
             .map_err(|error| format!("写入离线查看器失败：{error}"))?;
         std::fs::write(staging.join("README.txt"), EXPORT_README)
@@ -84,7 +93,8 @@ fn package_blocking(job: &JobRuntime, owner_uin: &str, complete: bool) -> Result
             std::fs::remove_file(&temporary)
                 .map_err(|error| format!("清理旧导出文件失败：{error}"))?;
         }
-        write_zip(&temporary, &staging, &job.media_dir())?;
+        write_zip(&temporary, &staging, &job.media_dir(), cancellation)?;
+        ensure_export_active(cancellation)?;
         if target.exists() {
             std::fs::remove_file(&target)
                 .map_err(|error| format!("替换旧导出文件失败：{error}"))?;
@@ -94,31 +104,63 @@ fn package_blocking(job: &JobRuntime, owner_uin: &str, complete: bool) -> Result
         Ok(target)
     })();
     let _ = std::fs::remove_dir_all(&staging);
+    if result.is_err() {
+        let _ = std::fs::remove_file(export_dir.join("qzone-archive.zip.part"));
+    }
     result
 }
 
-fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
+fn write_json(
+    path: &Path,
+    value: &impl Serialize,
+    cancellation: &CancellationToken,
+) -> Result<(), String> {
+    ensure_export_active(cancellation)?;
     let encoded =
         serde_json::to_vec_pretty(value).map_err(|error| format!("生成导出 JSON 失败：{error}"))?;
+    ensure_export_active(cancellation)?;
     std::fs::write(path, encoded).map_err(|error| format!("写入导出 JSON 失败：{error}"))
 }
 
-fn write_data_js(path: &Path, records: &[database::ExportRecord]) -> Result<(), String> {
+fn write_data_js(
+    path: &Path,
+    records: &[database::ExportRecord],
+    cancellation: &CancellationToken,
+) -> Result<(), String> {
+    ensure_export_active(cancellation)?;
     let mut file = File::create(path).map_err(|error| format!("创建查看器数据失败：{error}"))?;
     file.write_all(b"window.__QZONE_ARCHIVE_DATA__=")
         .map_err(|error| format!("写入查看器数据失败：{error}"))?;
     serde_json::to_writer(&mut file, records)
         .map_err(|error| format!("序列化查看器数据失败：{error}"))?;
+    ensure_export_active(cancellation)?;
     file.write_all(b";\n")
         .map_err(|error| format!("完成查看器数据失败：{error}"))
 }
 
-fn write_zip(target: &Path, staging: &Path, media: &Path) -> Result<(), String> {
+fn write_zip(
+    target: &Path,
+    staging: &Path,
+    media: &Path,
+    cancellation: &CancellationToken,
+) -> Result<(), String> {
     let file = File::create(target).map_err(|error| format!("创建 ZIP 失败：{error}"))?;
     let mut archive = ZipWriter::new(file);
-    add_tree(&mut archive, staging, "", CompressionMethod::Deflated)?;
+    add_tree(
+        &mut archive,
+        staging,
+        "",
+        CompressionMethod::Deflated,
+        cancellation,
+    )?;
     if media.exists() {
-        add_tree(&mut archive, media, "media", CompressionMethod::Stored)?;
+        add_tree(
+            &mut archive,
+            media,
+            "media",
+            CompressionMethod::Stored,
+            cancellation,
+        )?;
     }
     archive
         .finish()
@@ -131,8 +173,10 @@ fn add_tree(
     root: &Path,
     prefix: &str,
     compression: CompressionMethod,
+    cancellation: &CancellationToken,
 ) -> Result<(), String> {
     for entry in WalkDir::new(root).follow_links(false) {
+        ensure_export_active(cancellation)?;
         let entry = entry.map_err(|error| format!("读取导出目录失败：{error}"))?;
         if !entry.file_type().is_file() {
             continue;
@@ -157,6 +201,7 @@ fn add_tree(
             File::open(entry.path()).map_err(|error| format!("打开导出文件失败：{error}"))?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
+            ensure_export_active(cancellation)?;
             let read = input
                 .read(&mut buffer)
                 .map_err(|error| format!("读取导出文件失败：{error}"))?;
@@ -169,6 +214,14 @@ fn add_tree(
         }
     }
     Ok(())
+}
+
+fn ensure_export_active(cancellation: &CancellationToken) -> Result<(), String> {
+    if cancellation.is_cancelled() {
+        Err("任务已取消".into())
+    } else {
+        Ok(())
+    }
 }
 
 const EXPORT_README: &str = r#"QQ 空间归档导出
@@ -253,7 +306,13 @@ mod tests {
             None,
         )
         .unwrap();
-        let zip_path = package_blocking(&job, "12345", true).unwrap();
+        let zip_path = package_blocking(
+            &job,
+            "12345",
+            true,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap();
         let file = std::fs::File::open(zip_path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
         assert!(archive.by_name("index.html").is_ok());

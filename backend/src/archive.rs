@@ -67,6 +67,7 @@ pub async fn run(
     }
     job.update(|status| {
         status.phase = JobPhase::Archiving;
+        status.last_progress_at = Some(now());
         if let Some(checkpoint) = checkpoint.as_ref() {
             status.pages = status.pages.max(checkpoint.pages);
             status.fetched = status.fetched.max(checkpoint.fetched);
@@ -87,12 +88,14 @@ pub async fn run(
     loop {
         ensure_not_cancelled(&cancellation)?;
         ensure_capacity(&job.dir, &config)?;
-        let page = feeds::fetch_feeds(
-            &job.login,
-            if cursor.is_some() { "2" } else { "1" },
-            cursor.as_deref(),
-        )
-        .await?;
+        let page = tokio::select! {
+            result = feeds::fetch_feeds(
+                &job.login,
+                if cursor.is_some() { "2" } else { "1" },
+                cursor.as_deref(),
+            ) => result?,
+            _ = cancellation.cancelled() => return Err("任务已取消".into()),
+        };
         let next = if page.has_more {
             Some(
                 page.attach_info
@@ -123,6 +126,7 @@ pub async fn run(
             status.fetched += saved.processed;
             status.saved = saved.unique_feeds;
             status.media_total = saved.media_total;
+            status.last_progress_at = Some(now());
             status.message = format!(
                 "已归档 {} 页，共整理 {} 条唯一记录",
                 status.pages, status.saved
@@ -153,6 +157,7 @@ pub async fn run(
         job.update(|status| {
             status.phase = JobPhase::DownloadingMedia;
             status.message = format!("正在下载 {} 个媒体文件", status.media_total);
+            status.last_progress_at = Some(now());
         })
         .await
         .map_err(|error| error.message)?;
@@ -164,10 +169,11 @@ pub async fn run(
     job.update(|status| {
         status.phase = JobPhase::Packaging;
         status.message = "正在生成可离线浏览的 ZIP 文件".into();
+        status.last_progress_at = Some(now());
     })
     .await
     .map_err(|error| error.message)?;
-    let path = export::package(job.clone(), owner_uin, complete).await?;
+    let path = export::package(job.clone(), owner_uin, complete, cancellation.clone()).await?;
     let size = tokio::fs::metadata(&path)
         .await
         .map_err(|error| format!("检查导出文件失败：{error}"))?
@@ -176,11 +182,16 @@ pub async fn run(
         return Err("导出 ZIP 为空，已拒绝提供下载".into());
     }
     job.login.clear().await;
+    let ready_expires_at = now() + config.ready_job_ttl.as_secs() as i64;
     job.update(|status| {
         status.phase = JobPhase::Ready;
         status.download_ready = true;
         status.logged_in = false;
         status.masked_uin = None;
+        status.run_started_at = None;
+        status.last_progress_at = None;
+        status.queued_ahead = 0;
+        status.expires_at = ready_expires_at;
         status.message = if complete {
             format!(
                 "归档完成：{} 条记录，{} 个媒体文件可下载",
@@ -269,6 +280,7 @@ async fn download_media(
                 .map_err(|_| "更新媒体状态意外停止".to_owned())??;
                 job.update(|status| {
                     status.media_downloaded += 1;
+                    status.last_progress_at = Some(now());
                     status.message = format!(
                         "媒体下载进度：{}/{}",
                         status.media_downloaded + status.media_failed,
@@ -289,6 +301,7 @@ async fn download_media(
                 .map_err(|_| "更新媒体失败状态意外停止".to_owned())??;
                 job.update(|status| {
                     status.media_failed += 1;
+                    status.last_progress_at = Some(now());
                     status.message = format!(
                         "媒体下载进度：{}/{}（{} 个失败）",
                         status.media_downloaded + status.media_failed,
@@ -340,7 +353,10 @@ impl MediaDownloader<'_> {
             if cookie_allowed_for_host(&url) {
                 request = request.header(COOKIE, &self.auth.cookie_header);
             }
-            let response = match request.send().await {
+            let response = match tokio::select! {
+                response = request.send() => response,
+                _ = self.cancellation.cancelled() => return Err("任务已取消".into()),
+            } {
                 Ok(response) if response.status().is_success() => response,
                 _ => continue,
             };

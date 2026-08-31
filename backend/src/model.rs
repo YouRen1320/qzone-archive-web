@@ -33,6 +33,14 @@ pub struct JobStatus {
     pub message: String,
     pub created_at: i64,
     pub expires_at: i64,
+    #[serde(default)]
+    pub last_activity_at: i64,
+    #[serde(default)]
+    pub run_started_at: Option<i64>,
+    #[serde(default)]
+    pub last_progress_at: Option<i64>,
+    #[serde(default)]
+    pub queued_ahead: u64,
     pub logged_in: bool,
     pub masked_uin: Option<String>,
     pub pages: u64,
@@ -54,6 +62,10 @@ impl JobStatus {
             message: "请先使用 QQ 扫码登录".into(),
             created_at,
             expires_at,
+            last_activity_at: created_at,
+            run_started_at: None,
+            last_progress_at: None,
+            queued_ahead: 0,
             logged_in: false,
             masked_uin: None,
             pages: 0,
@@ -102,6 +114,42 @@ impl Default for StartArchiveRequest {
             page_delay_ms: default_page_delay_ms(),
             max_pages: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PersistentJob;
+
+    #[test]
+    fn legacy_status_adds_lifecycle_fields_without_rejecting_the_job() {
+        let legacy = serde_json::json!({
+            "schemaVersion": 1,
+            "tokenHash": "0".repeat(64),
+            "status": {
+                "jobId": "0123456789abcdef0123456789abcdef",
+                "phase": "ready",
+                "message": "done",
+                "createdAt": 1,
+                "expiresAt": 2,
+                "loggedIn": false,
+                "maskedUin": null,
+                "pages": 1,
+                "fetched": 1,
+                "saved": 1,
+                "mediaTotal": 0,
+                "mediaDownloaded": 0,
+                "mediaFailed": 0,
+                "includeMedia": true,
+                "downloadReady": true,
+                "downloadedAt": null
+            }
+        });
+
+        let parsed: PersistentJob = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed.status.last_activity_at, 0);
+        assert_eq!(parsed.status.run_started_at, None);
+        assert_eq!(parsed.status.queued_ahead, 0);
     }
 }
 

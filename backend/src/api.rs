@@ -81,7 +81,7 @@ async fn create_job(
         return Ok((StatusCode::OK, jar, Json(existing.status().await)));
     }
     let (job, owner_token) = state.manager.create().await?;
-    let max_age = time::Duration::seconds(state.manager.config.job_ttl.as_secs() as i64);
+    let max_age = time::Duration::seconds(state.manager.config.owner_cookie_ttl().as_secs() as i64);
     let jar = jar
         .add(private_cookie(
             JOB_COOKIE,
@@ -129,11 +129,15 @@ async fn start_qr_login(
         ));
     }
     let qr = job.login.start_qr_login().await.map_err(upstream_error)?;
+    let current = crate::job::now();
+    let expires_at = state.manager.idle_expires_at(current);
     job.update(|status| {
         status.phase = JobPhase::AwaitingLogin;
         status.logged_in = false;
         status.masked_uin = None;
         status.message = "请使用手机 QQ 扫描二维码并确认".into();
+        status.last_activity_at = current;
+        status.expires_at = expires_at;
     })
     .await?;
     Ok(Json(QrResponse {
@@ -157,11 +161,15 @@ async fn poll_qr_login(
     let login = job.login.poll_qr_login().await.map_err(upstream_error)?;
     if login.status == "success" {
         let masked = login.masked_uin.clone();
+        let current = crate::job::now();
+        let expires_at = state.manager.idle_expires_at(current);
         job.update(|status| {
             status.phase = JobPhase::LoggedIn;
             status.logged_in = true;
             status.masked_uin = masked;
             status.message = "QQ 登录成功，可以开始归档".into();
+            status.last_activity_at = current;
+            status.expires_at = expires_at;
         })
         .await?;
     } else {

@@ -8,9 +8,10 @@
 | Resumable pages | SQLite transaction/checkpoint tests | Interrupt after a page, rescan, continue |
 | SSRF resistance | Media URL allowlist unit tests | Review redirects and egress logs |
 | Portable export | ZIP v2 test requires records JSON, HTML fallback, JSONL, SQLite and manifest | Open on desktop, iOS, and Android |
-| Local ZIP reader | Frontend tests open v1/v2 ZIPs, reject mismatches and traversal, and assert no upload | Open a real saved ZIP with the network disconnected after page load |
+| Ready reader | Frontend tests open the current task automatically and page/filter records through private APIs | Finish a real task, browse it in place, then save the ZIP separately |
 | Ready reader privacy | API tests reject missing owner cookies and verify private range responses | Open media in the owning browser; confirm another browser receives 401 |
-| Automatic deletion | Job manager TTL tests | Observe expiry and post-download cleanup |
+| Automatic deletion | Job manager TTL tests | Observe idle, ready, and post-download cleanup |
+| Fair slot release | Queue-position and watchdog tests cover active counts, stalls, packaging, and run limits | Start two isolated browsers and verify an auto-paused first task releases the second |
 | Responsive UI | Type check, 11-phase component tests, axe checks, production build | 1440×900, 1366×768, 375×812, 320×720 and short-landscape browser checks |
 | Scene safety | Phase mapping tests; static scan rejects API/storage use and inline styles in the scene layer | WebGL, static fallback, reduced-motion and production-CSP console checks |
 | Rollback isolation | Container build and health check | Roll back tag; verify existing sites |

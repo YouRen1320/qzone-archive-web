@@ -21,13 +21,17 @@ Recommended `.env` for the initial 2 GiB host:
 
 ```dotenv
 QZONE_IMAGE=qzone-archive-web
-QZONE_IMAGE_TAG=v0.5.1
+QZONE_IMAGE_TAG=v0.6.0
 QZONE_BIND=0.0.0.0:8091
 QZONE_DATA_DIR=/data/jobs
 QZONE_PUBLIC_ORIGIN=https://qzone.iyouren.top
 QZONE_SECURE_COOKIES=true
+QZONE_IDLE_JOB_TTL_SECONDS=1200
 QZONE_JOB_TTL_SECONDS=21600
+QZONE_READY_JOB_TTL_SECONDS=7200
 QZONE_POST_DOWNLOAD_TTL_SECONDS=600
+QZONE_NO_PROGRESS_TIMEOUT_SECONDS=300
+QZONE_MAX_RUN_SECONDS=3600
 QZONE_MAX_JOBS=8
 QZONE_MAX_ACTIVE_ARCHIVES=1
 QZONE_MAX_JOB_BYTES=5368709120
@@ -42,7 +46,7 @@ Do not put QQ cookies or user credentials in this file.
 The canonical anonymous deployment path is the checksum-protected image archive attached to the public GitHub Release. Download and verify the exact tag before loading it:
 
 ```bash
-release=v0.5.1
+release=v0.6.0
 base_url="https://github.com/YouRen1320/qzone-archive-web/releases/download/${release}"
 curl --fail --location --remote-name "${base_url}/qzone-archive-web-${release}-linux-amd64.tar.gz"
 curl --fail --location --remote-name "${base_url}/SHA256SUMS"
@@ -83,6 +87,8 @@ Run these checks before inviting users:
 8. The ZIP contains records JSON, the compatibility viewer, JSONL, SQLite, manifest, and expected media, but no cookies.
 9. Explicit deletion and TTL cleanup immediately make viewer routes unavailable and remove the complete task directory.
 10. The existing sites on the host still return their previous content.
+11. A queued browser shows the number of tasks ahead; closing that browser does not stop its queued task.
+12. A stalled test task changes to `paused`, releases the active slot, and retains its task-local SQLite for resumption.
 
 ## Updates
 
