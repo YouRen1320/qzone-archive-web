@@ -1,19 +1,47 @@
-# Verification matrix
+# 验证说明
 
-| Requirement | Automated evidence | Production evidence |
+自动化测试刻意不请求 QQ 接口，也不包含真实账号数据。需要扫码、真实归档内容或生产等待时间的项目属于人工上线门禁，不能用模拟结果代替。
+
+## 验证矩阵
+
+| 要求 | 自动化证据 | 生产环境证据 |
 | --- | --- | --- |
-| Owner isolation | API test rejects a wrong 256-bit owner token | Two-browser access test |
-| No shared database | Path and database tests use one file per random job | Inspect `/data/jobs/<id>/` layout |
-| Cookie memory only | Login state has no serialization implementation; export tests inspect ZIP entries | Search task files and logs after real QR login |
-| Resumable pages | SQLite transaction/checkpoint tests | Interrupt after a page, rescan, continue |
-| SSRF resistance | Media URL allowlist unit tests | Review redirects and egress logs |
-| Portable export | ZIP v2 test requires records JSON, HTML fallback, JSONL, SQLite and manifest | Open on desktop, iOS, and Android |
-| Ready reader | Frontend tests open the current task automatically and page/filter records through private APIs | Finish a real task, browse it in place, then save the ZIP separately |
-| Ready reader privacy | API tests reject missing owner cookies and verify private range responses | Open media in the owning browser; confirm another browser receives 401 |
-| Automatic deletion | Job manager TTL tests | Observe idle, ready, and post-download cleanup |
-| Fair slot release | Queue-position and watchdog tests cover active counts, stalls, packaging, and run limits | Start two isolated browsers and verify an auto-paused first task releases the second |
-| Responsive UI | Type check, 11-phase component tests, axe checks, production build | 1440×900, 1366×768, 375×812, 320×720 and short-landscape browser checks |
-| Scene safety | Phase mapping tests; static scan rejects API/storage use and inline styles in the scene layer | WebGL, static fallback, reduced-motion and production-CSP console checks |
-| Rollback isolation | Container build and health check | Roll back tag; verify existing sites |
+| 所有者隔离 | API 测试确认错误的 256 位所有者令牌会被拒绝 | 使用两个相互隔离的浏览器复核访问权限 |
+| 无共享数据库 | 路径与数据库测试为每个随机任务使用独立文件 | 检查 `/data/jobs/<id>/` 目录结构 |
+| Cookie 仅驻留内存 | 登录状态没有序列化实现；导出测试检查 ZIP 条目 | 真实扫码后检查任务文件和日志 |
+| 分页断点续传 | SQLite 事务与检查点测试 | 归档一页后中断，重新扫码并继续 |
+| SSRF 防护 | 媒体 URL 允许列表单元测试 | 检查重定向和出口流量日志 |
+| 可移植导出 | ZIP v2 测试要求包含记录 JSON、HTML 兼容阅读器、JSONL、SQLite 和清单 | 分别在桌面端、iOS 和 Android 打开 |
+| 站内阅读 | 前端测试确认任务完成后自动进入阅读器，并通过私有 API 分页和筛选 | 完成真实任务，在原页面阅读后另存 ZIP |
+| 阅读器隐私 | API 测试拒绝缺少所有者 Cookie 的请求，并验证私有媒体 Range 响应 | 所有者浏览器打开媒体，另一个浏览器应收到 401 |
+| 自动删除 | 任务管理器 TTL 测试 | 观察未开始、已完成和下载后的清理时点 |
+| 公平释放执行位 | 队列位置和看门狗测试覆盖停滞、打包、运行上限与活动任务计数 | 启动两个隔离浏览器，确认首个任务自动暂停后第二个开始 |
+| 响应式与无障碍 | 类型检查、11 阶段组件测试、axe 检查与生产构建 | 检查 1440×900、1366×768、375×812、320×720 和矮屏横屏 |
+| 场景安全 | 阶段映射测试；静态扫描禁止场景层访问 API、存储和使用行内样式 | 检查 WebGL、静态降级、减少动态效果和生产 CSP 控制台 |
+| 回滚隔离 | 容器构建与健康检查 | 回滚镜像标签，并确认同机其他站点不受影响 |
 
-Tests deliberately do not make QQ network requests or contain real account data. A real account smoke test is a separate manual deployment gate.
+## 最近一次公开核验
+
+2026 年 9 月 7 日在不使用真实 QQ 账号或真实归档数据的前提下完成：
+
+- 线上首页可访问，默认桌面视口与 375×812 移动视口正确显示；README 截图来自该页面且不含敏感信息。
+- 前端共 58 项测试通过，`vue-tsc` 类型检查和 Vite 生产构建通过，`npm audit` 为 0 个已知漏洞。
+- Rust 1.88 环境中的格式检查、Clippy 和后端测试通过。
+- 当前源码已重新构建为 `linux/amd64` 容器，并以非 root 用户启动；首页与 `/api/health` 健康检查通过。
+- v0.6.0 Release 不是草稿或预发布；公开压缩包的 SHA-256 与 `SHA256SUMS` 一致。
+- v0.6.0 镜像包元数据为 `linux/amd64`，暴露 8091 端口并包含 `/api/health` 健康检查。
+
+上述结果只证明源码与公开产物的离线边界，不代表 QQ 非公开接口在任意时间、IP 或账号下都可用。
+
+## 发布前人工门禁
+
+每次涉及 QQ 协议、任务状态机、导出格式或部署配置的发布，都应在获授权的测试账号上完成：
+
+1. 扫码登录并验证二维码过期、取消和重新扫码。
+2. 验证排队、归档、安全停止、自动暂停、重新扫码续传、站内阅读、下载和立即删除的完整状态流。
+3. 使用含重复记录、失效媒体和大文件的授权样本，核对去重、失败计数、清单与离线阅读器。
+4. 使用两个隔离浏览器验证所有者隔离、队列顺序和执行位释放。
+5. 在桌面端、iOS 和 Android 检查 ZIP；在真实手机上验证从 QQ 相册识别二维码。
+6. 按配置等待并确认未开始、已完成及下载后的 TTL 清理。
+7. 在减少动态效果、静态降级和键盘操作条件下复核界面，并检查生产 CSP 控制台。
+8. 演练回滚到上一镜像标签，确认同机其他站点不受影响。
