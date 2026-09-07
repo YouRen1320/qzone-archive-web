@@ -1,4 +1,4 @@
-name: CI
+name: 持续集成
 
 on:
   push:
@@ -15,15 +15,22 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - name: 检出源码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: 配置 Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
-      - run: npm test
-      - run: npm run build
+      - name: 安装前端依赖
+        run: npm ci
+      - name: 运行前端测试
+        run: npm test
+      - name: 构建前端
+        run: npm run build
 
   backend:
     runs-on: ubuntu-latest
@@ -31,30 +38,43 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - name: 检出源码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: 配置 Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: "1.88"
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - name: 缓存 Rust 构建
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: backend
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked --all-targets
+      - name: 检查 Rust 格式
+        run: cargo fmt --check
+      - name: 运行 Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: 运行后端测试
+        run: cargo test --locked --all-targets
 
   container:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - name: Validate production Compose image selection
+      - name: 检出源码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: 验证生产 Compose 镜像选择
         run: |
           cp env.example .env
           image="$(sed -n 's/^QZONE_IMAGE=//p' env.example)"
           tag="$(sed -n 's/^QZONE_IMAGE_TAG=//p' env.example)"
           test "$(docker compose config --images)" = "${image}:${tag}"
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      - name: 配置 Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - name: 构建容器镜像
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           push: false
