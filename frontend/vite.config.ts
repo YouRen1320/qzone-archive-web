@@ -1,4 +1,5 @@
-import { defineConfig } from 'vite'
+// 使用 vitest/config 的 defineConfig，让 vite.config.ts 中的 test 字段获得完整类型支持。
+import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 
 // Development requests use the same API paths as production to keep cookie behavior identical.
